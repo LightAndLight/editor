@@ -22,6 +22,7 @@ library
                      , dependent-map
                      , dependent-sum
                      , dependent-sum-template
+                     , deriving-compat
                      , reflex ^>=0.6
                      , reflex-dom
   ghc-options:         -Wall -Werror
@@ -30,11 +31,16 @@ library
 
 executable frontend
   build-depends:       base ^>=4.11.0.0
+                     , monoidal-containers
                      , containers ^>= 0.5
                      , dependent-map
                      , common
+                     , ghcjs-dom
+                     , jsaddle
+                     , jsaddle-dom
                      , reflex ^>=0.6
                      , reflex-dom
+                     , text >= 1.2
   ghc-options:         -Wall -Werror
   hs-source-dirs:      exe
   main-is:             Main.hs

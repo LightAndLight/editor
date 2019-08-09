@@ -4,9 +4,12 @@
 {-# language TemplateHaskell #-}
 module Editor where
 
+import Control.Monad (guard)
 import Data.Dependent.Map (DMap)
+import Data.Functor.Identity (Identity(..))
+import Data.Functor.Classes (Eq1(..), Ord1(..))
 -- import Data.Dependent.Sum (ShowTag(..))
-import Data.GADT.Compare (geq, gcompare, GOrdering(..))
+import Data.GADT.Compare (GEq(..), GCompare(..), GOrdering(..), (:~:)(..))
 import Data.GADT.Compare.TH (deriveGEq, deriveGCompare)
 import Data.GADT.Show.TH (deriveGShow)
 import Data.Map (Map)
@@ -70,44 +73,44 @@ data Context
   , _ctxLocalScope :: Map Binding (ID Binding)
   } deriving (Eq, Ord, Show)
 
-data NodeInfo a where
+data NodeInfo f a where
   BoundInfo ::
     Context ->
-    String ->
-    NodeInfo Bound
+    f String ->
+    NodeInfo f Bound
 
   BindingInfo ::
     Context ->
-    String ->
-    NodeInfo Binding
+    f String ->
+    NodeInfo f Binding
 
   VarInfo ::
     Context ->
     ID Bound ->
-    NodeInfo Expr
+    NodeInfo f Expr
 
   HoleInfo ::
     Context ->
-    NodeInfo Expr
+    NodeInfo f Expr
 
   AppInfo ::
     Context ->
     ID Expr ->
     ID Expr ->
-    NodeInfo Expr
+    NodeInfo f Expr
 
   LamInfo ::
     Context ->
     ID Binding ->
     ID Expr ->
-    NodeInfo Expr
+    NodeInfo f Expr
 -- fuckn 8.4
-instance Eq (NodeInfo a) where
+instance Eq1 f => Eq (NodeInfo f a) where
   (==) a b =
     case geq a b of
       Nothing -> False
       Just{} -> True
-instance Ord (NodeInfo a) where
+instance Ord1 f => Ord (NodeInfo f a) where
   compare a b =
     case gcompare a b of
       GLT -> LT
@@ -117,9 +120,9 @@ instance Ord (NodeInfo a) where
 deriving instance Eq (NodeInfo a)
 deriving instance Ord (NodeInfo a)
 -}
-deriving instance Show (NodeInfo a)
+-- deriving instance Show1 f => Show (NodeInfo f a)
 
-parent :: NodeInfo a -> Maybe SomeID
+parent :: NodeInfo f a -> Maybe SomeID
 parent ni =
   case ni of
     BindingInfo c _ -> _ctxParent c
@@ -129,8 +132,95 @@ parent ni =
     AppInfo c _ _ -> _ctxParent c
     LamInfo c _ _ -> _ctxParent c
 
-deriveGEq ''NodeInfo
-deriveGCompare ''NodeInfo
+instance Eq1 f => GEq (NodeInfo f) where
+  geq (BindingInfo a b) (BindingInfo a' b') =
+    Refl <$ guard (a == a' && liftEq (==) b b')
+  geq (BoundInfo a b) (BoundInfo a' b') =
+    Refl <$ guard (a == a' && liftEq (==) b b')
+  geq (HoleInfo a) (HoleInfo a') = Refl <$ guard (a == a')
+  geq (VarInfo a b) (VarInfo a' b') =
+    Refl <$ guard (a == a' && b == b')
+  geq (AppInfo a b c) (AppInfo a' b' c') =
+    Refl <$ guard (a == a' && b == b' && c == c')
+  geq (LamInfo a b c) (LamInfo a' b' c') =
+    Refl <$ guard (a == a' && b == b' && c == c')
+  geq _ _ = Nothing
+instance Ord1 f => GCompare (NodeInfo f) where
+  gcompare (BindingInfo a b) (BindingInfo a' b') =
+    case compare a a' of
+      LT -> GLT
+      EQ ->
+        case liftCompare compare b b' of
+          LT -> GLT
+          EQ -> GEQ
+          GT -> GGT
+      GT -> GGT
+  gcompare BindingInfo{} _ = GLT
+  gcompare _ BindingInfo{} = GGT
+
+  gcompare (BoundInfo a b) (BoundInfo a' b') =
+    case compare a a' of
+      LT -> GLT
+      EQ ->
+        case liftCompare compare b b' of
+          LT -> GLT
+          EQ -> GEQ
+          GT -> GGT
+      GT -> GGT
+  gcompare BoundInfo{} _ = GLT
+  gcompare _ BoundInfo{} = GGT
+
+  gcompare (HoleInfo a) (HoleInfo a') =
+    case compare a a' of
+      LT -> GLT
+      EQ -> GEQ
+      GT -> GGT
+  gcompare HoleInfo{} _ = GLT
+  gcompare _ HoleInfo{} = GGT
+
+  gcompare (VarInfo a b) (VarInfo a' b') =
+    case compare a a' of
+      LT -> GLT
+      EQ ->
+        case compare b b' of
+          LT -> GLT
+          EQ -> GEQ
+          GT -> GGT
+      GT -> GGT
+  gcompare VarInfo{} _ = GLT
+  gcompare _ VarInfo{} = GGT
+
+  gcompare (AppInfo a b c) (AppInfo a' b' c') =
+    case compare a a' of
+      LT -> GLT
+      EQ ->
+        case compare b b' of
+          LT -> GLT
+          EQ ->
+            case compare c c' of
+              LT -> GLT
+              EQ -> GEQ
+              GT -> GGT
+          GT -> GGT
+      GT -> GGT
+  gcompare AppInfo{} _ = GLT
+  gcompare _ AppInfo{} = GGT
+
+  gcompare (LamInfo a b c) (LamInfo a' b' c') =
+    case compare a a' of
+      LT -> GLT
+      EQ ->
+        case compare b b' of
+          LT -> GLT
+          EQ ->
+            case compare c c' of
+              LT -> GLT
+              EQ -> GEQ
+              GT -> GGT
+          GT -> GGT
+      GT -> GGT
+  -- gcompare LamInfo{} _ = GLT
+  -- gcompare _ LamInfo{} = GGT
 deriveGEq ''ID
 deriveGCompare ''ID
 deriveGShow ''ID
@@ -144,10 +234,11 @@ instance ShowTag ID NodeInfo where
 
 class Unbuild a where
   unbuild ::
-    DMap ID NodeInfo ->
+    Applicative f =>
+    DMap ID (NodeInfo f) ->
     Context ->
     a ->
-    (ID a, DMap ID NodeInfo)
+    (ID a, DMap ID (NodeInfo f))
 
 instance Unbuild Bound where
   unbuild m ctx (Bound a) =
@@ -155,7 +246,7 @@ instance Unbuild Bound where
       i' = (ID_Bound $ DMap.size m)
     in
       ( i'
-      , DMap.insert i' (BoundInfo ctx a) m
+      , DMap.insert i' (BoundInfo ctx $ pure a) m
       )
 
 instance Unbuild Binding where
@@ -163,7 +254,7 @@ instance Unbuild Binding where
     let
       i' = (ID_Binding $ DMap.size m)
     in
-      (i', DMap.insert i' (BindingInfo ctx a) m)
+      (i', DMap.insert i' (BindingInfo ctx $ pure a) m)
 
 instance Unbuild Expr where
   unbuild m ctx (Var a) =
@@ -192,24 +283,24 @@ instance Unbuild Expr where
     in
       (i', DMap.insert i' (LamInfo ctx a' b') m'')
 
-rebuild :: DMap ID NodeInfo -> ID a -> Maybe a
+rebuild :: DMap ID (NodeInfo Identity) -> ID a -> Maybe a
 rebuild m i =
   DMap.lookup i m >>=
   \case
-    BindingInfo _ a -> Just $ Binding a
-    BoundInfo _ a -> Just $ Bound a
+    BindingInfo _ a -> Just $ Binding $ runIdentity a
+    BoundInfo _ a -> Just $ Bound $ runIdentity a
     HoleInfo _ -> Just Hole
     VarInfo _ val -> Var <$> rebuild m val
     AppInfo _ a b -> App <$> rebuild m a <*> rebuild m b
     LamInfo _ a b -> Lam <$> rebuild m a <*> rebuild m b
 
-getBounds :: DMap ID NodeInfo -> ID Binding -> [ID Bound]
+getBounds :: DMap ID (NodeInfo Identity) -> ID Binding -> [ID Bound]
 getBounds m i =
   DMap.foldrWithKey
     (\k v rest ->
        case v of
          BoundInfo ctx val ->
-           case Map.lookup (Binding val) (_ctxLocalScope ctx) of
+           case Map.lookup (Binding $ runIdentity val) (_ctxLocalScope ctx) of
              -- this variable is not bound by local scope
              Nothing -> rest
              -- this variable is bound by local scope
@@ -223,9 +314,12 @@ getBounds m i =
     []
     m
 
-getBinding :: DMap ID NodeInfo -> ID Bound -> Maybe (ID Binding)
+getBinding ::
+  DMap ID (NodeInfo Identity) ->
+  ID Bound ->
+  Maybe (ID Binding)
 getBinding m i =
   DMap.lookup i m >>=
   \case
     BoundInfo ctx val ->
-      Map.lookup (Binding val) (_ctxLocalScope ctx)
+      Map.lookup (Binding $ runIdentity val) (_ctxLocalScope ctx)
