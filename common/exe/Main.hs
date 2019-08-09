@@ -11,6 +11,7 @@ import Editor
 import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
 import Data.Functor.Identity (Identity(..))
+import Data.Functor.Misc (Const2(..))
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Map.Monoidal (MonoidalMap(..))
@@ -35,11 +36,12 @@ renderColor :: Color -> Text
 renderColor Grey = "gray"
 renderColor Red = "red"
 
-data Change
+data Decoration
   = Highlight Color
   | Clear
 
-  | EditBinding
+data Change
+  = EditBinding
   | UpdateBinding String
   | CommitBinding
   deriving Show
@@ -48,6 +50,11 @@ data MenuItem = Rename
 data Action
   = OpenMenu SomeID Int Int [MenuItem]
   | CloseMenu
+
+data NodeEditInfo t a where
+  BoundEditInfo ::
+    Event t Bool -> -- is this edit causing it to be captured
+    NodeEditInfo t Bound
 
 renderExpr ::
   forall t m a.
@@ -58,19 +65,22 @@ renderExpr ::
   , MonadFix m
   ) =>
   (ID a, DMap ID (NodeInfo Identity)) ->
-  MonoidalMap SomeID [Event t Change] ->
-  Event t (MonoidalMap SomeID (NonEmpty Change)) ->
+  EventSelector t (Const2 SomeID (NonEmpty Decoration)) ->
+  EventSelector t (Const2 SomeID (NonEmpty Change)) ->
   DMap ID (NodeInfo (Dynamic t)) ->
+  DMap ID (NodeEditInfo t) ->
   m
     ( DMap ID (NodeInfo (Dynamic t))
+    , DMap ID (NodeEditInfo t)
     , Event t [Action]
-    , MonoidalMap SomeID [Event t Change]
+    , MonoidalMap SomeID (Event t (NonEmpty Decoration))
+    , MonoidalMap SomeID (Event t (NonEmpty Change))
     )
-renderExpr (root, nodes) changes menuChanges liveMap = do
+renderExpr (root, nodes) eDecos eChanges liveMap editInfo = do
   case DMap.lookup root nodes of
     Nothing -> do
       text $ fromString (show root) <> "Not found"
-      pure (mempty, never, mempty)
+      pure (mempty, mempty, never, mempty, mempty)
     Just ni -> do
       rec
         let eEnter :: Event t () = domEvent Mouseenter theSpan
@@ -79,165 +89,184 @@ renderExpr (root, nodes) changes menuChanges liveMap = do
           wrapDomEvent (_element_raw theSpan) (elementOnEventName Contextmenu) $ do
             preventDefault
             mouseClientXY
-        let
-          eAllChanges =
-            eChanges <>
-            coerceEvent (mergeMap . fmap mergeList $ getMonoidalMap eChanges')
         dStyling <-
           holdDyn
             mempty
             (fmapMaybe
-               (\(MonoidalMap mp1) -> do
-                  res <- Map.lookup (SomeID root) mp1
-                  foldr
-                    (\case
-                       Highlight col ->
-                         const . Just $
-                         "style" =: ("background-color: " <> renderColor col)
-                       Clear ->
-                         const $ Just mempty
-                       _ -> id)
-                    Nothing
-                    res)
-               eAllChanges)
-        (theSpan, (mp, eActions, eChanges')) <-
+               (foldr
+                  (\case
+                     Highlight col ->
+                       const . Just $
+                       "style" =: ("background-color: " <> renderColor col)
+                     Clear ->
+                       const $ Just mempty)
+                  Nothing)
+               (select eDecos (Const2 $ SomeID root)))
+        (theSpan, (mp, editInfo', eActions, decos', changes')) <-
           elDynAttr' "span" (("id" =: fromString (show root) <>) <$> dStyling) $
           case ni of
             BindingInfo ctx (Identity a) -> do
+              let bounds = getBounds nodes root
+              let
+                eAnyCaptured =
+                  mergeWith (||) .
+                  fmap (\(BoundEditInfo eCap) -> eCap) .
+                  fromMaybe [] $ traverse (\b -> DMap.lookup b editInfo) bounds
+              bNotCaptured <- hold True $ fmapCheap not eAnyCaptured
               rec
                 dControls :: Dynamic t (Dynamic t String, Event t ()) <-
                   widgetHold
                     ((pure a, never) <$ text (fromString a))
                     (attachWithMaybe
-                      (\val (MonoidalMap mp1) -> do
-                          res <- Map.lookup (SomeID root) mp1
+                       (\(val, notCaptured) ->
                           foldr
-                            (\case
-                               EditBinding ->
-                                 const . Just $
-                                 (\ti -> (Text.unpack <$> _textInput_value ti, keypress Enter ti)) <$>
-                                 textInput (TextInputConfig "text" (fromString val) never (constDyn mempty))
-                               CommitBinding ->
-                                 const . Just $ (pure val, never) <$ text (fromString val)
-                               _ -> id)
-                            Nothing
-                            res)
-                      (current dContent)
-                      eChanges)
+                          (\case
+                             EditBinding ->
+                               const . Just $
+                               (\ti -> (Text.unpack <$> _textInput_value ti, keypress Enter ti)) <$>
+                               textInput
+                                 (TextInputConfig "text" (fromString val) never (constDyn mempty))
+                             CommitBinding ->
+                               const $ do
+                                 guard notCaptured
+                                 Just $ (pure val, never) <$ text (fromString val)
+                             _ -> id)
+                          Nothing)
+                       ((,) <$> current dContent <*> bNotCaptured)
+                       (select eChanges (Const2 $ SomeID root)))
                 let dContent = dControls >>= fst
               let eCommit = switchDyn $ snd <$> dControls
               let eUpdate = updated dContent
-              let bounds = getBounds nodes root
               let
-                eChanges'' =
+                changes1 =
+                  MonoidalMap $
+                  Map.singleton
+                    (SomeID root)
+                    (mergeList
+                     [ UpdateBinding <$> eUpdate
+                     , CommitBinding <$ eCommit
+                     ])
+
+                decos1 =
                   MonoidalMap $
                   Map.insert
                     (SomeID root)
-                    [ UpdateBinding <$> eUpdate
-                    , CommitBinding <$ eCommit
-                    , Highlight Grey <$ eEnter
-                    , Clear <$ eLeave
-                    ] $
+                    (mergeList
+                     [ Highlight Grey <$ eEnter
+                     , Clear <$ eLeave
+                     ]) $
                   foldr
                     (\b ->
                        Map.insert
                          (SomeID b)
-                         [Highlight Grey <$ eEnter, Clear <$ eLeave])
+                         (mergeList [Highlight Grey <$ eEnter, Clear <$ eLeave]))
                     mempty
                     bounds
+
                 eAction' =
                   (\(x, y) -> [OpenMenu (SomeID root) x y [Rename]]) <$>
                   eOpenMenu
+
               pure
                 ( DMap.singleton root $ BindingInfo ctx dContent
+                , mempty
                 , eAction'
-                , eChanges''
+                , decos1
+                , changes1
                 )
             BoundInfo ctx (Identity a) -> do
               let binding :: Maybe (ID Binding) = getBinding nodes root
               let
-                dBindingVal :: Dynamic t String =
-                  fromMaybe (error "binding val missing") $ do
-                    b <- binding
-                    BindingInfo _ dVal <- DMap.lookup b liveMap
-                    pure dVal
                 dLocalScope :: Dynamic t (Map Binding (ID Binding)) =
                   fromMaybe (error "local scope missing") $ do
-                    b <- binding
-                    BindingInfo c _ <- DMap.lookup b liveMap
+                    BoundInfo c _ <- DMap.lookup root liveMap
                     pure $ pure (_ctxLocalScope c)
 
               let
                 eUpdateBinding :: Event t String =
-                  maybe never _ $ getMonoidalMap changes
-                  fmapMaybe
-                    (\(MonoidalMap mp1) -> do
-                        b <- binding
-                        res <- Map.lookup (SomeID b) mp1
-                        foldr
-                          (\case; UpdateBinding str -> const (Just str); _ -> id)
-                          Nothing
-                          res)
-                    eChanges
+                  fromMaybe never $ do
+                    b <- binding
+                    Just $
+                      fmapMaybe
+                      (foldr
+                         (\case
+                             UpdateBinding str -> const (Just str)
+                             _ -> id)
+                         Nothing)
+                      (select eChanges $ Const2 (SomeID b))
 
               dContent <- holdDyn a eUpdateBinding
 
               dynText $ fromString <$> dContent
 
               let
-                eCaptured :: Event t () =
-                  fmapMaybe id $
-                  (\bval ls val -> guard $ val /= bval && Map.member (Binding val) ls) <$>
-                  current dBindingVal <*>
+                eCaptured :: Event t Bool =
+                  (\ls val ->
+                     fromMaybe False $ do
+                       found <- Map.lookup (Binding val) ls
+                       b <- binding
+                       pure $ found /= b) <$>
                   current dLocalScope <@>
-                  never -- eUpdateBinding
+                  eUpdateBinding
 
-                eChanges'' =
+                decos1 =
                   MonoidalMap $
                   maybe
                     id
                     (\b ->
                        Map.insert
                          (SomeID b)
-                         [Highlight Grey <$ eEnter, Clear <$ eLeave])
+                         (mergeList [Highlight Grey <$ eEnter, Clear <$ eLeave]))
                     binding $
                   Map.singleton
                     (SomeID root)
-                    [ Highlight Red <$ eCaptured
-                    , Highlight Grey <$ eEnter
-                    , Clear <$ eLeave
-                    ]
+                    (mergeList
+                     [ (\b -> if b then Highlight Red else Highlight Grey) <$> eCaptured
+                     , Highlight Grey <$ eEnter
+                     , Clear <$ eLeave
+                     ])
               pure
                 ( DMap.singleton root $ BoundInfo ctx dContent
+                , DMap.singleton root $ BoundEditInfo eCaptured
                 , never
-                , eChanges''
+                , decos1
+                , mempty
                 )
             HoleInfo ctx -> do
               text "_"
-              pure (DMap.singleton root $ HoleInfo ctx, never, mempty)
+              pure (DMap.singleton root $ HoleInfo ctx, mempty, never, mempty, mempty)
             VarInfo ctx val -> do
-              (mp1, eActions1, eChanges1) <- renderExpr (val, nodes) changes menuChanges liveMap
-              pure (DMap.insert root (VarInfo ctx val) mp1, eActions1, eChanges1)
+              (mp1, editInfo1, eActions1, decos1, changes1) <-
+                renderExpr (val, nodes) eDecos eChanges liveMap editInfo
+              pure (DMap.insert root (VarInfo ctx val) mp1, editInfo1, eActions1, decos1, changes1)
             AppInfo ctx a b -> do
-              (mp1, eActions1, eChanges1) <- renderExpr (a, nodes) changes menuChanges liveMap
+              (mp1, editInfo1, eActions1, decos1, changes1) <-
+                renderExpr (a, nodes) eDecos eChanges liveMap editInfo
               text " "
-              (mp2, eActions2, eChanges2) <- renderExpr (b, nodes) changes menuChanges liveMap
+              (mp2, editInfo2, eActions2, decos2, changes2) <-
+                renderExpr (b, nodes) eDecos eChanges liveMap editInfo
               pure
                 ( DMap.insert root (AppInfo ctx a b) $ mp1 <> mp2
+                , editInfo1 <> editInfo2
                 , eActions1 <> eActions2
-                , eChanges1 <> eChanges2
+                , decos1 <> decos2
+                , changes1 <> changes2
                 )
             LamInfo ctx a b -> do
               text "\\"
-              (mp1, eActions1, eChanges1) <- renderExpr (a, nodes) changes menuChanges liveMap
+              (mp1, editInfo1, eActions1, decos1, changes1) <-
+                renderExpr (a, nodes) eDecos eChanges liveMap editInfo
               text " -> "
-              (mp2, eActions2, eChanges2) <- renderExpr (b, nodes) changes menuChanges liveMap
+              (mp2, editInfo2, eActions2, decos2, changes2) <-
+                renderExpr (b, nodes) eDecos eChanges liveMap editInfo
               pure
                 ( DMap.insert root (LamInfo ctx a b) $ mp1 <> mp2
+                , editInfo1 <> editInfo2
                 , eActions1 <> eActions2
-                , eChanges1 <> eChanges2
+                , decos1 <> decos2
+                , changes1 <> changes2
                 )
-      pure (mp, eActions, eChanges')
+      pure (mp, editInfo', eActions, decos', changes')
 
 data Menu
   = Menu
@@ -337,6 +366,12 @@ main =
     document <- askDocument
     eCloseMenu <- wrapDomEvent document (`on` Events.click) $ pure [CloseMenu]
     rec
-      (mp, eActions, changes) <- renderExpr e' changes eMenuChanges mp
+      (mp, editInfo, eActions, MonoidalMap decos, MonoidalMap changes) <-
+        renderExpr
+          e'
+          (fanMap $ mergeMap decos)
+          (fanMap $ mergeMap changes <> coerceEvent eMenuChanges)
+          mp
+          editInfo
       eMenuChanges <- menu (eCloseMenu <> eActions)
     pure ()
