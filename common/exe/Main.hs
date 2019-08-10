@@ -2,21 +2,25 @@
 {-# language GADTs #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language RankNTypes #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
+{-# language TemplateHaskell #-}
 module Main where
 
 import Editor
 
-import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
+import Data.Foldable (fold)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor.Misc (Const2(..))
+import Data.GADT.Compare.TH (deriveGEq, deriveGCompare)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Map.Monoidal (MonoidalMap(..))
 import Data.Maybe (fromMaybe)
-import Data.Dependent.Map (DMap)
+import Data.Dependent.Map (DMap, GCompare)
+import Data.Dependent.Sum (DSum(..))
 import Data.String (fromString)
 import Data.Text (Text)
 import GHCJS.DOM.EventM (preventDefault, mouseClientXY, on)
@@ -46,6 +50,18 @@ data Change
   | CommitBinding
   deriving Show
 
+data ChangeK a where
+  EditBindingK :: ChangeK ()
+  UpdateBindingK :: ChangeK String
+  CommitBindingK :: ChangeK ()
+deriveGEq ''ChangeK
+deriveGCompare ''ChangeK
+
+data ChangeIdK a where
+  ChangeIdK :: SomeID -> ChangeK a -> ChangeIdK a
+deriveGEq ''ChangeIdK
+deriveGCompare ''ChangeIdK
+
 data MenuItem = Rename
 data Action
   = OpenMenu SomeID Int Int [MenuItem]
@@ -66,7 +82,7 @@ renderExpr ::
   ) =>
   (ID a, DMap ID (NodeInfo Identity)) ->
   EventSelector t (Const2 SomeID (NonEmpty Decoration)) ->
-  EventSelector t (Const2 SomeID (NonEmpty Change)) ->
+  EventSelector t ChangeIdK ->
   DMap ID (NodeInfo (Dynamic t)) ->
   DMap ID (NodeEditInfo t) ->
   m
@@ -74,7 +90,7 @@ renderExpr ::
     , DMap ID (NodeEditInfo t)
     , Event t [Action]
     , MonoidalMap SomeID (Event t (NonEmpty Decoration))
-    , MonoidalMap SomeID (Event t (NonEmpty Change))
+    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
     )
 renderExpr (root, nodes) eDecos eChanges liveMap editInfo = do
   case DMap.lookup root nodes of
@@ -113,38 +129,34 @@ renderExpr (root, nodes) eDecos eChanges liveMap editInfo = do
                   fmap (\(BoundEditInfo eCap) -> eCap) .
                   fromMaybe [] $ traverse (\b -> DMap.lookup b editInfo) bounds
               bNotCaptured <- hold True $ fmapCheap not eAnyCaptured
+              let eEditBinding = select eChanges $ ChangeIdK (SomeID root) EditBindingK
               rec
+                let dContent = dControls >>= fst
+                let eCommit = switchDyn $ snd <$> dControls
+                let eUpdate = updated dContent
                 dControls :: Dynamic t (Dynamic t String, Event t ()) <-
                   widgetHold
                     ((pure a, never) <$ text (fromString a))
-                    (attachWithMaybe
-                       (\(val, notCaptured) ->
-                          foldr
-                          (\case
-                             EditBinding ->
-                               const . Just $
-                               (\ti -> (Text.unpack <$> _textInput_value ti, keypress Enter ti)) <$>
-                               textInput
-                                 (TextInputConfig "text" (fromString val) never (constDyn mempty))
-                             CommitBinding ->
-                               const $ do
-                                 guard notCaptured
-                                 Just $ (pure val, never) <$ text (fromString val)
-                             _ -> id)
-                          Nothing)
-                       ((,) <$> current dContent <*> bNotCaptured)
-                       (select eChanges (Const2 $ SomeID root)))
-                let dContent = dControls >>= fst
-              let eCommit = switchDyn $ snd <$> dControls
-              let eUpdate = updated dContent
+                    (leftmost
+                     [ (\val -> (pure val, never) <$ text (fromString val)) <$>
+                       current dContent <@
+                       gate bNotCaptured eCommit
+                     , (\val ->
+                          fmap
+                          (\ti -> (Text.unpack <$> _textInput_value ti, keypress Enter ti))
+                          (textInput $
+                           TextInputConfig "text" (fromString val) never (constDyn mempty))) <$>
+                       current dContent <@
+                       eEditBinding
+                     ])
               let
                 changes1 =
                   MonoidalMap $
                   Map.singleton
                     (SomeID root)
-                    (mergeList
-                     [ UpdateBinding <$> eUpdate
-                     , CommitBinding <$ eCommit
+                    (merge . DMap.fromList $
+                     [ UpdateBindingK :=> eUpdate
+                     , CommitBindingK :=> eCommit
                      ])
 
                 decos1 =
@@ -186,14 +198,7 @@ renderExpr (root, nodes) eDecos eChanges liveMap editInfo = do
                 eUpdateBinding :: Event t String =
                   fromMaybe never $ do
                     b <- binding
-                    Just $
-                      fmapMaybe
-                      (foldr
-                         (\case
-                             UpdateBinding str -> const (Just str)
-                             _ -> id)
-                         Nothing)
-                      (select eChanges $ Const2 (SomeID b))
+                    Just $ select eChanges (ChangeIdK (SomeID b) UpdateBindingK)
 
               dContent <- holdDyn a eUpdateBinding
 
@@ -284,7 +289,7 @@ menuItem ::
   ) =>
   SomeID ->
   MenuItem ->
-  m (Event t Change)
+  m (Event t (DMap ChangeIdK Identity))
 menuItem i mi =
   case mi of
     Rename -> do
@@ -301,14 +306,14 @@ menuItem i mi =
         (theSpan, _) <- elDynAttr' "span" dAttrs $ text "rename"
       pure $
         case i of
-          SomeID ID_Binding{} -> EditBinding <$ eClick
+          SomeID ID_Binding{} -> DMap.singleton (ChangeIdK i EditBindingK) (pure ()) <$ eClick
           _ -> never
 
 menu ::
   forall t m.
   (DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m) =>
   Event t [Action] ->
-  m (Event t (MonoidalMap SomeID (NonEmpty Change)))
+  m (Event t (DMap ChangeIdK Identity))
 menu eAction = do
   dState :: Dynamic t Menu <-
     foldDyn
@@ -343,16 +348,19 @@ menu eAction = do
          (_menu_object m)) <$>
     dState
 
-  eChange :: Event t (NonEmpty Change) <- switchHold never $ mergeList <$> es
-  pure . coerceEvent $
-    (\m a -> maybe mempty (\i -> Map.singleton i a) (_menu_object m)) <$>
-    current dState <@>
-    eChange
+  eChange :: Event t (DMap ChangeIdK Identity) <- switchHold never $ fold <$> es
+  pure eChange
 
 headWidget :: DomBuilder t m => m ()
 headWidget = do
   el "title" $ text "Testing"
   el "style" $ text "html { font-family: monospace; }"
+
+nestingMaps :: GCompare g => (forall x. a -> f x -> g x) -> Map a (DMap f Identity) -> DMap g Identity
+nestingMaps comb =
+  Map.foldrWithKey
+    (\k v rest -> DMap.foldrWithKey (\kk -> DMap.insert (comb k kk)) rest v)
+    mempty
 
 main :: IO ()
 main =
@@ -370,7 +378,7 @@ main =
         renderExpr
           e'
           (fanMap $ mergeMap decos)
-          (fanMap $ mergeMap changes <> coerceEvent eMenuChanges)
+          (fan $ fmap (nestingMaps ChangeIdK) (mergeMap changes) <> eMenuChanges)
           mp
           editInfo
       eMenuChanges <- menu (eCloseMenu <> eActions)
