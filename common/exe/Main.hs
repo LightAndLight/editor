@@ -15,10 +15,10 @@ import Data.Foldable (fold)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor.Misc (Const2(..))
 import Data.GADT.Compare.TH (deriveGEq, deriveGCompare)
-import Data.List.NonEmpty (NonEmpty)
 import Data.Map (Map)
 import Data.Map.Monoidal (MonoidalMap(..))
 import Data.Maybe (fromMaybe)
+import Data.Monoid (Endo(..))
 import Data.Dependent.Map (DMap, GCompare)
 import Data.Dependent.Sum (DSum(..))
 import Data.String (fromString)
@@ -41,9 +41,22 @@ renderColor :: Color -> Text
 renderColor Grey = "gray"
 renderColor Red = "red"
 
-data Decoration
-  = Highlight Color
-  | Clear
+data Deco = Deco { _decoWarn :: Bool, _decoInfo :: Bool }
+
+emptyDeco :: Deco
+emptyDeco = Deco False False
+
+warn :: Deco -> Deco
+warn d = d { _decoWarn = True }
+
+unwarn :: Deco -> Deco
+unwarn d = d { _decoWarn = False }
+
+info :: Deco -> Deco
+info d = d { _decoInfo = True }
+
+uninfo :: Deco -> Deco
+uninfo d = d { _decoInfo = False }
 
 data Change
   = EditBinding
@@ -82,7 +95,7 @@ renderExpr ::
   , MonadFix m
   ) =>
   (ID a, DMap ID (NodeInfo Identity)) ->
-  EventSelector t (Const2 SomeID (NonEmpty Decoration)) ->
+  EventSelector t (Const2 SomeID (Endo Deco)) ->
   EventSelector t ChangeIdK ->
   DMap ID (NodeInfo (Dynamic t)) ->
   Dynamic t (Map Binding (ID Binding)) -> -- localscope
@@ -92,7 +105,7 @@ renderExpr ::
     , DMap ID (NodeInfo (Dynamic t))
     , DMap ID (NodeEditInfo t)
     , Event t [Action]
-    , MonoidalMap SomeID (Event t (NonEmpty Decoration))
+    , MonoidalMap SomeID (Event t (Endo Deco))
     , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
     )
 renderExpr (root, nodes) eDecos eChanges liveMap dScope editInfo = do
@@ -108,19 +121,21 @@ renderExpr (root, nodes) eDecos eChanges liveMap dScope editInfo = do
           wrapDomEvent (_element_raw theSpan) (elementOnEventName Contextmenu) $ do
             preventDefault
             mouseClientXY
-        dStyling <-
-          holdDyn
-            mempty
-            (fmapMaybe
-               (foldr
-                  (\case
-                     Highlight col ->
-                       const . Just $
-                       "style" =: ("background-color: " <> renderColor col)
-                     Clear ->
-                       const $ Just mempty)
-                  Nothing)
-               (select eDecos (Const2 $ SomeID root)))
+        dDeco <-
+          foldDyn
+            (\(Endo f) prev -> f prev)
+            emptyDeco
+            (select eDecos (Const2 $ SomeID root))
+        let
+          dStyling =
+            (\(Deco w i) ->
+                if w
+                then "style" =: "background-color: red"
+                else
+                  if i
+                  then "style" =: "background-color: grey"
+                  else mempty) <$>
+            dDeco
         (theSpan, (nni, mp, editInfo', eActions, decos', changes')) <-
           elDynAttr' "span" (("id" =: fromString (show root) <>) <$> dStyling) $
           case ni of
@@ -181,15 +196,12 @@ renderExpr (root, nodes) eDecos eChanges liveMap dScope editInfo = do
                   MonoidalMap $
                   Map.insert
                     (SomeID root)
-                    (mergeList
-                     [ Highlight Grey <$ eEnter
-                     , Clear <$ eLeave
-                     ]) $
+                    (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]) $
                   foldr
                     (\b ->
                        Map.insert
                          (SomeID b)
-                         (mergeList [Highlight Grey <$ eEnter, Clear <$ eLeave]))
+                         (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
                     mempty
                     bounds
 
@@ -244,14 +256,14 @@ renderExpr (root, nodes) eDecos eChanges liveMap dScope editInfo = do
                     (\b ->
                        Map.insert
                          (SomeID b)
-                         (mergeList [Highlight Grey <$ eEnter, Clear <$ eLeave]))
+                         (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
                     binding $
                   Map.singleton
                     (SomeID root)
-                    (mergeList
-                     [ (\b -> if b then Highlight Red else Highlight Grey) <$> eCaptured
-                     , Highlight Grey <$ eEnter
-                     , Clear <$ eLeave
+                    (fold
+                     [ (\b -> Endo $ if b then warn else unwarn) <$> eCaptured
+                     , Endo info <$ eEnter
+                     , Endo uninfo <$ eLeave
                      ])
 
               let ni' = BoundInfo (ctx { _ctxLocalScope = dScope }) dContent
