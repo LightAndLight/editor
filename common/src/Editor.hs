@@ -4,18 +4,18 @@
 {-# language TemplateHaskell #-}
 module Editor where
 
-import Control.Monad (guard)
 import Data.Dependent.Map (DMap)
 import Data.Functor.Identity (Identity(..))
-import Data.Functor.Classes (Eq1(..), Ord1(..))
 -- import Data.Dependent.Sum (ShowTag(..))
-import Data.GADT.Compare (GEq(..), GCompare(..), GOrdering(..), (:~:)(..))
+import Data.GADT.Compare (GEq(..), GCompare(..), GOrdering(..))
 import Data.GADT.Compare.TH (deriveGEq, deriveGCompare)
 import Data.GADT.Show.TH (deriveGShow)
 import Data.Map (Map)
+import Data.Set (Set, (\\))
 
 import qualified Data.Dependent.Map as DMap
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 
 data ID a where
   ID_Expr :: Int -> ID Expr
@@ -67,160 +67,74 @@ data Expr
   | Lam Binding Expr
   deriving (Eq, Show)
 
-data Context
+data Context f
   = Context
   { _ctxParent :: Maybe SomeID
-  , _ctxLocalScope :: Map Binding (ID Binding)
-  } deriving (Eq, Ord, Show)
+  , _ctxLocalScope :: f (Map Binding (ID Binding))
+  }
 
 data NodeInfo f a where
   BoundInfo ::
-    Context ->
+    Context f ->
     f String ->
     NodeInfo f Bound
 
   BindingInfo ::
-    Context ->
+    Context f ->
     f String ->
     NodeInfo f Binding
 
   VarInfo ::
-    Context ->
+    Context f ->
     ID Bound ->
+    f (Set (ID Bound)) ->
     NodeInfo f Expr
 
   HoleInfo ::
-    Context ->
+    Context f ->
     NodeInfo f Expr
 
   AppInfo ::
-    Context ->
+    Context f ->
     ID Expr ->
     ID Expr ->
+    f (Set (ID Bound)) ->
     NodeInfo f Expr
 
   LamInfo ::
-    Context ->
+    Context f ->
     ID Binding ->
     ID Expr ->
+    f (Set (ID Bound)) ->
     NodeInfo f Expr
--- fuckn 8.4
-instance Eq1 f => Eq (NodeInfo f a) where
-  (==) a b =
-    case geq a b of
-      Nothing -> False
-      Just{} -> True
-instance Ord1 f => Ord (NodeInfo f a) where
-  compare a b =
-    case gcompare a b of
-      GLT -> LT
-      GEQ{} -> EQ
-      GGT -> GT
 {-
 deriving instance Eq (NodeInfo a)
 deriving instance Ord (NodeInfo a)
 -}
 -- deriving instance Show1 f => Show (NodeInfo f a)
 
-parent :: NodeInfo f a -> Maybe SomeID
-parent ni =
+context :: NodeInfo f a -> Context f
+context ni =
   case ni of
-    BindingInfo c _ -> _ctxParent c
-    BoundInfo c _ -> _ctxParent c
-    HoleInfo c -> _ctxParent c
-    VarInfo c _ -> _ctxParent c
-    AppInfo c _ _ -> _ctxParent c
-    LamInfo c _ _ -> _ctxParent c
+    BindingInfo c _ -> c
+    BoundInfo c _ -> c
+    HoleInfo c -> c
+    VarInfo c _ _ -> c
+    AppInfo c _ _ _ -> c
+    LamInfo c _ _ _ -> c
 
-instance Eq1 f => GEq (NodeInfo f) where
-  geq (BindingInfo a b) (BindingInfo a' b') =
-    Refl <$ guard (a == a' && liftEq (==) b b')
-  geq (BoundInfo a b) (BoundInfo a' b') =
-    Refl <$ guard (a == a' && liftEq (==) b b')
-  geq (HoleInfo a) (HoleInfo a') = Refl <$ guard (a == a')
-  geq (VarInfo a b) (VarInfo a' b') =
-    Refl <$ guard (a == a' && b == b')
-  geq (AppInfo a b c) (AppInfo a' b' c') =
-    Refl <$ guard (a == a' && b == b' && c == c')
-  geq (LamInfo a b c) (LamInfo a' b' c') =
-    Refl <$ guard (a == a' && b == b' && c == c')
-  geq _ _ = Nothing
-instance Ord1 f => GCompare (NodeInfo f) where
-  gcompare (BindingInfo a b) (BindingInfo a' b') =
-    case compare a a' of
-      LT -> GLT
-      EQ ->
-        case liftCompare compare b b' of
-          LT -> GLT
-          EQ -> GEQ
-          GT -> GGT
-      GT -> GGT
-  gcompare BindingInfo{} _ = GLT
-  gcompare _ BindingInfo{} = GGT
+freeVars :: Applicative f => NodeInfo f a -> f (Set (ID Bound))
+freeVars ni =
+  case ni of
+    BindingInfo{} -> pure mempty
+    BoundInfo{} -> pure mempty
+    HoleInfo{} -> pure mempty
+    VarInfo _ _ a -> a
+    AppInfo _ _ _ a -> a
+    LamInfo _ _ _ a -> a
 
-  gcompare (BoundInfo a b) (BoundInfo a' b') =
-    case compare a a' of
-      LT -> GLT
-      EQ ->
-        case liftCompare compare b b' of
-          LT -> GLT
-          EQ -> GEQ
-          GT -> GGT
-      GT -> GGT
-  gcompare BoundInfo{} _ = GLT
-  gcompare _ BoundInfo{} = GGT
-
-  gcompare (HoleInfo a) (HoleInfo a') =
-    case compare a a' of
-      LT -> GLT
-      EQ -> GEQ
-      GT -> GGT
-  gcompare HoleInfo{} _ = GLT
-  gcompare _ HoleInfo{} = GGT
-
-  gcompare (VarInfo a b) (VarInfo a' b') =
-    case compare a a' of
-      LT -> GLT
-      EQ ->
-        case compare b b' of
-          LT -> GLT
-          EQ -> GEQ
-          GT -> GGT
-      GT -> GGT
-  gcompare VarInfo{} _ = GLT
-  gcompare _ VarInfo{} = GGT
-
-  gcompare (AppInfo a b c) (AppInfo a' b' c') =
-    case compare a a' of
-      LT -> GLT
-      EQ ->
-        case compare b b' of
-          LT -> GLT
-          EQ ->
-            case compare c c' of
-              LT -> GLT
-              EQ -> GEQ
-              GT -> GGT
-          GT -> GGT
-      GT -> GGT
-  gcompare AppInfo{} _ = GLT
-  gcompare _ AppInfo{} = GGT
-
-  gcompare (LamInfo a b c) (LamInfo a' b' c') =
-    case compare a a' of
-      LT -> GLT
-      EQ ->
-        case compare b b' of
-          LT -> GLT
-          EQ ->
-            case compare c c' of
-              LT -> GLT
-              EQ -> GEQ
-              GT -> GGT
-          GT -> GGT
-      GT -> GGT
-  -- gcompare LamInfo{} _ = GLT
-  -- gcompare _ LamInfo{} = GGT
+parent :: NodeInfo f a -> Maybe SomeID
+parent = _ctxParent . context
 deriveGEq ''ID
 deriveGCompare ''ID
 deriveGShow ''ID
@@ -236,9 +150,9 @@ class Unbuild a where
   unbuild ::
     Applicative f =>
     DMap ID (NodeInfo f) ->
-    Context ->
+    Context f ->
     a ->
-    (ID a, DMap ID (NodeInfo f))
+    (ID a, DMap ID (NodeInfo f), f (Set (ID Bound)))
 
 instance Unbuild Bound where
   unbuild m ctx (Bound a) =
@@ -247,6 +161,7 @@ instance Unbuild Bound where
     in
       ( i'
       , DMap.insert i' (BoundInfo ctx $ pure a) m
+      , pure mempty
       )
 
 instance Unbuild Binding where
@@ -254,34 +169,40 @@ instance Unbuild Binding where
     let
       i' = (ID_Binding $ DMap.size m)
     in
-      (i', DMap.insert i' (BindingInfo ctx $ pure a) m)
+      (i', DMap.insert i' (BindingInfo ctx $ pure a) m, pure mempty)
 
 instance Unbuild Expr where
   unbuild m ctx (Var a) =
     let
-      (a', m') = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
+      (a', m', _) = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
       i' = (ID_Expr $ DMap.size m')
+      fvs = pure $ Set.singleton a'
     in
-      (i', DMap.insert i' (VarInfo ctx a') m')
+      ( i'
+      , DMap.insert i' (VarInfo ctx a' fvs) m'
+      , fvs
+      )
   unbuild m ctx Hole =
     let
       i' = (ID_Expr $ DMap.size m)
     in
-      (i', DMap.insert i' (HoleInfo ctx) m)
+      (i', DMap.insert i' (HoleInfo ctx) m, pure mempty)
   unbuild m ctx (App a b) =
     let
-      (a', m') = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
-      (b', m'') = unbuild m' (ctx { _ctxParent = Just $ SomeID i'}) b
+      (a', m', fvs') = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
+      (b', m'', fvs'') = unbuild m' (ctx { _ctxParent = Just $ SomeID i'}) b
       i' = (ID_Expr $ DMap.size m'')
+      fvs''' = (<>) <$> fvs' <*> fvs''
     in
-      (i', DMap.insert i' (AppInfo ctx a' b') m'')
+      (i', DMap.insert i' (AppInfo ctx a' b' fvs''') m'', fvs''')
   unbuild m ctx (Lam a b) =
     let
-      (a', m') = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
-      (b', m'') = unbuild m' (Context (Just $ SomeID i') (Map.insert a a' $ _ctxLocalScope ctx)) b
+      (a', m', _) = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
+      (b', m'', fvs') = unbuild m' (Context (Just $ SomeID i') (Map.insert a a' <$> _ctxLocalScope ctx)) b
       i' = (ID_Expr $ DMap.size m'')
+      fvs'' = (\bbs ffs -> ffs \\ Set.fromList bbs) <$> getBounds m'' a' <*> fvs'
     in
-      (i', DMap.insert i' (LamInfo ctx a' b') m'')
+      (i', DMap.insert i' (LamInfo ctx a' b' fvs'') m'', fvs'')
 
 rebuild :: DMap ID (NodeInfo Identity) -> ID a -> Maybe a
 rebuild m i =
@@ -290,28 +211,31 @@ rebuild m i =
     BindingInfo _ a -> Just $ Binding $ runIdentity a
     BoundInfo _ a -> Just $ Bound $ runIdentity a
     HoleInfo _ -> Just Hole
-    VarInfo _ val -> Var <$> rebuild m val
-    AppInfo _ a b -> App <$> rebuild m a <*> rebuild m b
-    LamInfo _ a b -> Lam <$> rebuild m a <*> rebuild m b
+    VarInfo _ val _ -> Var <$> rebuild m val
+    AppInfo _ a b _ -> App <$> rebuild m a <*> rebuild m b
+    LamInfo _ a b _ -> Lam <$> rebuild m a <*> rebuild m b
 
-getBounds :: DMap ID (NodeInfo Identity) -> ID Binding -> [ID Bound]
+getBounds :: Applicative f => DMap ID (NodeInfo f) -> ID Binding -> f [ID Bound]
 getBounds m i =
   DMap.foldrWithKey
     (\k v rest ->
        case v of
          BoundInfo ctx val ->
-           case Map.lookup (Binding $ runIdentity val) (_ctxLocalScope ctx) of
+           (\vv cc rr -> case Map.lookup (Binding vv) cc of
              -- this variable is not bound by local scope
-             Nothing -> rest
+             Nothing -> rr
              -- this variable is bound by local scope
              Just b ->
                if b == i
                -- this variable is bound by the one we're interested in
-               then k : rest
+               then k : rr
                -- this variable is bound by another variable
-               else rest
+               else rr) <$>
+           val <*>
+           _ctxLocalScope ctx <*>
+           rest
          _ -> rest)
-    []
+    (pure [])
     m
 
 getBinding ::
@@ -322,4 +246,6 @@ getBinding m i =
   DMap.lookup i m >>=
   \case
     BoundInfo ctx val ->
-      Map.lookup (Binding $ runIdentity val) (_ctxLocalScope ctx)
+      Map.lookup
+        (Binding $ runIdentity val)
+        (runIdentity $ _ctxLocalScope ctx)
