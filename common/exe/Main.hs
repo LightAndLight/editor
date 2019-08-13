@@ -14,6 +14,7 @@ import Editor
 
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Reader (MonadReader, runReaderT, asks, local)
+import Data.Char (ord)
 import Data.Foldable (fold)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor.Misc (Const2(..))
@@ -25,6 +26,7 @@ import Data.Monoid (Endo(..))
 import Data.Dependent.Map (DMap, GCompare)
 import Data.Dependent.Sum (DSum(..))
 import Data.String (fromString)
+import Data.Semigroup (First(..))
 import Data.Set (Set)
 import GHCJS.DOM.EventM (preventDefault, mouseClientXY, on)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
@@ -36,10 +38,15 @@ import qualified Data.Dependent.Map as DMap
 import qualified Data.Map as Map
 import qualified Data.Text as Text
 
-data Deco = Deco { _decoWarn :: Bool, _decoInfo :: Bool }
+data Deco
+  = Deco
+  { _decoWarn :: Bool
+  , _decoInfo :: Bool
+  , _decoDotted :: Bool
+  }
 
 emptyDeco :: Deco
-emptyDeco = Deco False False
+emptyDeco = Deco False False False
 
 warn :: Deco -> Deco
 warn d = d { _decoWarn = True }
@@ -52,6 +59,12 @@ info d = d { _decoInfo = True }
 
 uninfo :: Deco -> Deco
 uninfo d = d { _decoInfo = False }
+
+dotted :: Deco -> Deco
+dotted d = d { _decoDotted = True }
+
+undotted :: Deco -> Deco
+undotted d = d { _decoDotted = False }
 
 data Change
   = RenameBinding
@@ -88,19 +101,27 @@ data RenderInfo t
   , _ri_eAction :: Event t [Action]
   , _ri_decos :: MonoidalMap SomeID (Event t (Endo Deco))
   , _ri_changes :: MonoidalMap SomeID (Event t (DMap ChangeK Identity))
+  , _ri_eCursorTo :: Event t (First SomeID)
   }
 
 instance Reflex t => Semigroup (RenderInfo t) where
-  RenderInfo a b c d e <> RenderInfo a' b' c' d' e' =
-    RenderInfo (a <> a') (b <> b') (c <> c') (d <> d') (e <> e')
+  RenderInfo a b c d e f <> RenderInfo a' b' c' d' e' f' =
+    RenderInfo (a <> a') (b <> b') (c <> c') (d <> d') (e <> e') (f <> f')
 instance Reflex t => Monoid (RenderInfo t) where
-  mempty = RenderInfo mempty mempty mempty mempty mempty
+  mempty = RenderInfo mempty mempty mempty mempty mempty mempty
 
 data RenderEnv t
   = RenderEnv
   { _re_eEnter :: Event t ()
   , _re_eLeave :: Event t ()
+  , _re_eCursorLeafRight :: Event t ()
+  , _re_eCursorLeafLeft :: Event t ()
+  , _re_eCursorSiblingRight :: Event t ()
+  , _re_eCursorSiblingLeft :: Event t ()
+  , _re_eCursorParent :: Event t ()
+  , _re_eCursorChild :: Event t ()
   , _re_eOpenMenu :: Event t (Int, Int)
+  , _re_cursor :: Dynamic t SomeID
   , _re_liveGraph :: DMap ID (NodeInfo (Dynamic t))
   , _re_editInfo :: DMap ID (NodeEditInfo t)
   , _re_localScope :: Dynamic t (Map Binding (ID Binding))
@@ -202,6 +223,7 @@ renderBindingInfo root nodes ctx a = do
             [ UpdateBindingK :=> eUpdate
             , CommitBindingK :=> eCommit
             ])
+      , _ri_eCursorTo = never
       }
 
   pure (ni', ri)
@@ -276,6 +298,7 @@ renderBoundInfo root nodes ctx a = do
             , Endo uninfo <$ eLeave
             ])
       , _ri_changes = mempty
+      , _ri_eCursorTo = never
       }
 
   pure (ni', ri)
@@ -299,6 +322,7 @@ renderHoleInfo root ctx = do
       , _ri_eAction = never
       , _ri_decos = mempty
       , _ri_changes = mempty
+      , _ri_eCursorTo = never
       }
 
   pure (ni', ri)
@@ -426,18 +450,29 @@ renderExpr root nodes =
 
         let
           dStyling =
-            (\(Deco w i) ->
-                if w
-                then "style" =: "background-color: red"
-                else
-                  if i
-                  then "style" =: "background-color: grey"
-                  else mempty) <$>
+            (\(Deco w i d) ->
+               let
+                 bg =
+                   if w
+                   then "background-color: red;"
+                   else
+                     if i
+                     then "background-color: grey;"
+                     else mempty
+                 border = if d then "border: 1px dotted black;" else mempty
+               in
+                 "style" =: (bg <> border)) <$>
             dDeco
 
         (theSpan, (nni, ri')) <-
           elDynAttr' "span" (("id" =: fromString (show root) <>) <$> dStyling) .
-          local (\re -> re { _re_eEnter = eEnter, _re_eLeave = eLeave, _re_eOpenMenu = eOpenMenu }) $
+          local
+            (\re ->
+             re
+             { _re_eEnter = eEnter
+             , _re_eLeave = eLeave
+             , _re_eOpenMenu = eOpenMenu
+             }) $
           case ni of
             BindingInfo ctx (Identity a) ->
               renderBindingInfo root nodes ctx a
@@ -450,7 +485,162 @@ renderExpr root nodes =
               renderAppInfo root nodes ctx a b vars
             LamInfo ctx a b (Identity vars) ->
               renderLamInfo root nodes ctx a b vars
-      pure (nni, ri')
+      dCursor <- asks _re_cursor
+      liveGraph <- asks _re_liveGraph
+      eCursorLeafRight <- asks _re_eCursorLeafRight
+      eCursorLeafLeft <- asks _re_eCursorLeafLeft
+      eCursorSiblingRight <- asks _re_eCursorSiblingRight
+      eCursorSiblingLeft <- asks _re_eCursorSiblingLeft
+      eCursorParent <- asks _re_eCursorParent
+      eCursorChild <- asks _re_eCursorChild
+      let
+        doSiblingRight = do
+          SomeID p <- parent ni
+          res <- DMap.lookup p liveGraph
+          case res of
+            BindingInfo{} -> error "impossible - binding is not a parent"
+            BoundInfo{} -> error "impossible - bound is not a parent"
+            HoleInfo{} -> error "impossible - hole is not a parent"
+            VarInfo{} -> Nothing
+            AppInfo _ a b _ ->
+              if SomeID a == SomeID root
+              then pure $ SomeID b
+              else Nothing
+            LamInfo _ a b _ ->
+              if SomeID a == SomeID root
+              then pure $ SomeID b
+              else Nothing
+        doSiblingLeft = do
+          SomeID p <- parent ni
+          res <- DMap.lookup p liveGraph
+          case res of
+            BindingInfo{} -> error "impossible - binding is not a parent"
+            BoundInfo{} -> error "impossible - bound is not a parent"
+            HoleInfo{} -> error "impossible - hole is not a parent"
+            VarInfo{} -> Nothing
+            AppInfo _ a b _ ->
+              if SomeID b == SomeID root
+              then pure $ SomeID a
+              else Nothing
+            LamInfo _ a b _ ->
+              if SomeID b == SomeID root
+              then pure $ SomeID a
+              else Nothing
+        doParent = parent ni
+        doChild =
+          case ni of
+            BindingInfo{} -> Nothing
+            BoundInfo{} -> Nothing
+            HoleInfo{} -> Nothing
+            VarInfo _ a _ -> Just $ SomeID a
+            AppInfo _ a _ _ -> Just $ SomeID a
+            LamInfo _ a _ _ -> Just $ SomeID a
+
+        rightmostLeaf :: forall x. ID x -> Maybe SomeID
+        rightmostLeaf i = do
+          res <- DMap.lookup i liveGraph
+          case res of
+            BindingInfo{} -> Just $ SomeID i
+            BoundInfo{} -> Just $ SomeID i
+            HoleInfo{} -> Just $ SomeID i
+            VarInfo _ a _ -> rightmostLeaf a
+            AppInfo _ _ a _ -> rightmostLeaf a
+            LamInfo _ _ a _ -> rightmostLeaf a
+
+        doLeafLeft :: forall x f. ID x -> NodeInfo f x -> Maybe SomeID
+        doLeafLeft from nnni = do
+          SomeID p <- parent nnni
+          res <- DMap.lookup p liveGraph
+          case res of
+            BindingInfo{} -> error "impossible - binding is not a parent"
+            BoundInfo{} -> error "impossible - bound is not a parent"
+            HoleInfo{} -> error "impossible - hole is not a parent"
+            VarInfo _ a _ ->
+              if SomeID from == SomeID a
+              then doLeafLeft p res
+              else error "bad child ID"
+            AppInfo _ a b _ ->
+              if SomeID from == SomeID b
+              then rightmostLeaf a
+              else
+                if SomeID from == SomeID a
+                then doLeafLeft p res
+                else error "bad child ID"
+            LamInfo _ a b _ ->
+              if SomeID from == SomeID b
+              then rightmostLeaf a
+              else
+                if SomeID from == SomeID a
+                then doLeafLeft p res
+                else error "bad child ID"
+
+        leftmostLeaf :: forall x. ID x -> Maybe SomeID
+        leftmostLeaf i = do
+          res <- DMap.lookup i liveGraph
+          case res of
+            BindingInfo{} -> Just $ SomeID i
+            BoundInfo{} -> Just $ SomeID i
+            HoleInfo{} -> Just $ SomeID i
+            VarInfo _ a _ -> leftmostLeaf a
+            AppInfo _ a _ _ -> leftmostLeaf a
+            LamInfo _ a _ _ -> leftmostLeaf a
+
+        doLeafRight :: forall x f. ID x -> NodeInfo f x -> Maybe SomeID
+        doLeafRight from nnni = do
+          SomeID p <- parent nnni
+          res <- DMap.lookup p liveGraph
+          case res of
+            BindingInfo{} -> error "impossible - binding is not a parent"
+            BoundInfo{} -> error "impossible - bound is not a parent"
+            HoleInfo{} -> error "impossible - hole is not a parent"
+            VarInfo _ a _ ->
+              if SomeID from == SomeID a
+              then doLeafRight p res
+              else error "bad child ID"
+            AppInfo _ a b _ ->
+              if SomeID from == SomeID a
+              then leftmostLeaf b
+              else
+                if SomeID from == SomeID b
+                then doLeafRight p res
+                else error "bad child ID"
+            LamInfo _ a b _ ->
+              if SomeID from == SomeID a
+              then leftmostLeaf b
+              else
+                if SomeID from == SomeID b
+                then doLeafRight p res
+                else error "bad child ID"
+        ri'' =
+          ri'
+          { _ri_eCursorTo =
+            (attachWithMaybe
+               (\i _ -> if i == SomeID root then fmap First doSiblingRight else Nothing)
+               (current dCursor)
+               eCursorSiblingRight) <>
+            (attachWithMaybe
+               (\i _ -> if i == SomeID root then fmap First doSiblingLeft else Nothing)
+               (current dCursor)
+               eCursorSiblingLeft) <>
+            (attachWithMaybe
+               (\i _ -> if i == SomeID root then fmap First doParent else Nothing)
+               (current dCursor)
+               eCursorParent) <>
+            (attachWithMaybe
+               (\i _ -> if i == SomeID root then fmap First doChild else Nothing)
+               (current dCursor)
+               eCursorChild) <>
+            (attachWithMaybe
+               (\i _ -> if i == SomeID root then fmap First (doLeafRight root ni) else Nothing)
+               (current dCursor)
+               eCursorLeafRight) <>
+            (attachWithMaybe
+               (\i _ -> if i == SomeID root then fmap First (doLeafLeft root ni) else Nothing)
+               (current dCursor)
+               eCursorLeafLeft) <>
+            _ri_eCursorTo ri'
+          }
+      pure (nni, ri'')
 
 data Menu
   = Menu
@@ -556,13 +746,47 @@ main =
       (eid, enodes, _) = unbuild mempty (Context Nothing mempty) e
     document <- askDocument
     eCloseMenu <- wrapDomEvent document (`on` Events.click) $ pure [CloseMenu]
+    eDocumentKeyDown <- wrapDomEvent document (`on` Events.keyUp) $ getKeyEvent
+    let
+      eKeyK =
+        fmapMaybe
+          (\c -> if c == fromIntegral (ord 'K') then Just () else Nothing)
+          eDocumentKeyDown
+      eKeyJ =
+        fmapMaybe
+          (\c -> if c == fromIntegral (ord 'J') then Just () else Nothing)
+          eDocumentKeyDown
+      eKeyLeft =
+        fmapMaybe
+          (\c -> if c == 37 then Just () else Nothing)
+          eDocumentKeyDown
+      eKeyRight =
+        fmapMaybe
+          (\c -> if c == 39 then Just () else Nothing)
+          eDocumentKeyDown
+      eKeyH =
+        fmapMaybe
+          (\c -> if c == fromIntegral (ord 'H') then Just () else Nothing)
+          eDocumentKeyDown
+      eKeyL =
+        fmapMaybe
+          (\c -> if c == fromIntegral (ord 'L') then Just () else Nothing)
+          eDocumentKeyDown
+    ePostBuild <- getPostBuild
     rec
       let
         re =
           RenderEnv
           { _re_eEnter = never
           , _re_eLeave = never
+          , _re_eCursorLeafRight = eKeyL
+          , _re_eCursorLeafLeft = eKeyH
+          , _re_eCursorSiblingRight = eKeyRight
+          , _re_eCursorSiblingLeft = eKeyLeft
+          , _re_eCursorParent = eKeyK
+          , _re_eCursorChild = eKeyJ
           , _re_eOpenMenu = never
+          , _re_cursor = dCursor
           , _re_liveGraph = _ri_liveGraph ri
           , _re_editInfo = _ri_editInfo ri
           , _re_localScope = pure mempty
@@ -572,8 +796,18 @@ main =
               (nestingMaps ChangeIdK)
               (mergeMap $ getMonoidalMap $ _ri_changes ri) <>
             eMenuChanges
-          , _re_decos = fanMap $ mergeMap $ getMonoidalMap $ _ri_decos ri
+          , _re_decos =
+            fanMap $
+            mergeMap (getMonoidalMap $ _ri_decos ri) <>
+            ((\i i' ->
+                if i /= i'
+                then Map.fromList [(i, Endo undotted), (i', Endo dotted)]
+                else mempty) <$>
+             current dCursor <@>
+             updated dCursor) <>
+            (Map.singleton (SomeID eid) (Endo dotted) <$ ePostBuild)
           }
       (_, ri) <- flip runReaderT re $ renderExpr eid enodes
       eMenuChanges <- menu (eCloseMenu <> _ri_eAction ri)
+      dCursor <- holdDyn (SomeID eid) (coerceEvent $ _ri_eCursorTo ri)
     pure ()
