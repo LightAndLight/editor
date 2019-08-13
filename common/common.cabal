@@ -38,6 +38,7 @@ executable frontend
                      , dependent-sum-template
                      , common
                      , ghcjs-dom
+                     , mtl
                      , jsaddle
                      , jsaddle-dom
                      , reflex ^>=0.6
