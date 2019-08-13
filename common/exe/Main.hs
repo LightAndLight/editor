@@ -17,6 +17,7 @@ import Control.Monad.Reader (MonadReader, runReaderT, asks, local)
 import Control.Monad.Trans (lift)
 import Data.Char (ord)
 import Data.Foldable (fold)
+import Data.Functor.Compose (Compose(..))
 import Data.Functor.Identity (Identity(..))
 import Data.Functor.Misc (Const2(..))
 import Data.GADT.Compare.TH (deriveGEq, deriveGCompare)
@@ -77,6 +78,7 @@ data ChangeK a where
   RenameBindingK :: ChangeK ()
   UpdateBindingK :: ChangeK String
   CommitBindingK :: ChangeK ()
+  DeleteNode :: ChangeK ()
 deriveGEq ''ChangeK
 deriveGCompare ''ChangeK
 
@@ -97,7 +99,7 @@ data NodeEditInfo t a where
 
 data RenderInfo t
   = RenderInfo
-  { _ri_liveGraph :: DMap ID (NodeInfo (Dynamic t))
+  { _ri_liveGraph :: DMap ID (Compose (Dynamic t) (NodeInfo (Dynamic t)))
   , _ri_editInfo :: DMap ID (NodeEditInfo t)
   , _ri_eAction :: Event t [Action]
   , _ri_decos :: MonoidalMap SomeID (Event t (Endo Deco))
@@ -403,8 +405,17 @@ getSiblingRight root nnni graph = do
         then Nothing
         else error "bad child ID"
 
-getSiblingLeft :: ID a -> NodeInfo f a -> DMap ID (NodeInfo (Dynamic t)) -> Maybe SomeID
+getSiblingLeft ::
+  ID a ->
+  NodeInfo f a ->
+  DMap ID (Compose (Dynamic t) (NodeInfo (Dynamic t))) ->
+  Maybe SomeID
 getSiblingLeft root nnni graph = do
+  SomeID p <- parent nnni
+  -- dNode :: Maybe (Dynamic t (NodeInfo (Dynamic t) _))
+  Compose dNode <- DMap.lookup p graph
+  _
+{-
   SomeID p <- parent nnni
   res <- DMap.lookup p graph
   case res of
@@ -425,6 +436,7 @@ getSiblingLeft root nnni graph = do
         if SomeID a == SomeID root
         then Nothing
         else error "bad child ID"
+-}
 
 rightmostLeaf :: ID a -> DMap ID (NodeInfo f) -> Maybe SomeID
 rightmostLeaf i graph = do
@@ -744,39 +756,45 @@ main =
           leftmost
           [ attachWithMaybe
             (\(SomeID i) _ -> do
-                ni <- DMap.lookup i $ _ri_liveGraph ri
+                Compose ni <- DMap.lookup i $ _ri_liveGraph ri
                 getLeafRight i ni $ _ri_liveGraph ri)
             (current dCursor)
             eKeyL
           , attachWithMaybe
             (\(SomeID i) _ -> do
-                ni <- DMap.lookup i $ _ri_liveGraph ri
+                Compose ni <- DMap.lookup i $ _ri_liveGraph ri
                 getLeafLeft i ni $ _ri_liveGraph ri)
             (current dCursor)
             eKeyH
           , attachWithMaybe
             (\(SomeID i) _ -> do
-                ni <- DMap.lookup i $ _ri_liveGraph ri
+                Compose ni <- DMap.lookup i $ _ri_liveGraph ri
                 getSiblingRight i ni $ _ri_liveGraph ri)
             (current dCursor)
             eKeyRight
           , attachWithMaybe
-            (\(SomeID i) _ -> do
-                ni <- DMap.lookup i $ _ri_liveGraph ri
-                getSiblingLeft i ni $ _ri_liveGraph ri)
-            (current dCursor)
+            const
+            (current $ do
+               SomeID i <- dCursor
+               let mdni = getCompose <$> DMap.lookup i (_ri_liveGraph ri)
+               mni <- sequence mdni
+               pure $ mni >>= \ni -> getSiblingLeft i ni (_ri_liveGraph ri))
             eKeyLeft
           , attachWithMaybe
-            (\(SomeID i) _ -> do
-                ni <- DMap.lookup i $ _ri_liveGraph ri
-                getParent ni)
-            (current dCursor)
+            const
+            (current $ do
+               SomeID i <- dCursor
+               let mdni = getCompose <$> DMap.lookup i (_ri_liveGraph ri)
+               mni <- sequence mdni
+               pure $ mni >>= getParent)
             eKeyK
           , attachWithMaybe
-            (\(SomeID i) _ -> do
-                ni <- DMap.lookup i $ _ri_liveGraph ri
-                getChild ni)
-            (current dCursor)
+            const
+            (current $ do
+               SomeID i <- dCursor
+               let mdni = getCompose <$> DMap.lookup i (_ri_liveGraph ri)
+               mni <- sequence mdni
+               pure $ mni >>= getChild)
             eKeyJ
           ]
       dCursor <- holdDyn (SomeID eid) (coerceEvent eCursorTo)
