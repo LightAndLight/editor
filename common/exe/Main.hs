@@ -170,45 +170,38 @@ renderBindingInfo root nodes ctx a = do
   eOpenMenu <- asks _re_eOpenMenu
   eEnter <- asks _re_eEnter
   eLeave <- asks _re_eLeave
-  let
-    changes1 =
-      MonoidalMap $
-      Map.singleton
-        (SomeID root)
-        (merge . DMap.fromList $
-          [ UpdateBindingK :=> eUpdate
-          , CommitBindingK :=> eCommit
-          ])
-
-    Identity bounds = getBounds nodes root
-    decos1 =
-      MonoidalMap $
-      Map.insert
-        (SomeID root)
-        (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]) $
-      foldr
-        (\b ->
-            Map.insert
-              (SomeID b)
-              (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
-        mempty
-        bounds
-
-    eAction' =
-      (\(x, y) -> [OpenMenu (SomeID root) x y [Rename]]) <$>
-      eOpenMenu
-
   dScope <- asks _re_localScope
-  let ni' = BindingInfo (ctx { _ctxLocalScope = dScope }) dContent
-
   let
+    Identity bounds = getBounds nodes root
+    ni' = BindingInfo (ctx { _ctxLocalScope = dScope }) dContent
+
     ri =
       RenderInfo
       { _ri_liveGraph = DMap.singleton root ni'
       , _ri_editInfo = mempty
-      , _ri_eAction = eAction'
-      , _ri_decos = decos1
-      , _ri_changes = changes1
+      , _ri_eAction =
+        (\(x, y) -> [OpenMenu (SomeID root) x y [Rename]]) <$>
+        eOpenMenu
+      , _ri_decos =
+        MonoidalMap $
+        Map.insert
+          (SomeID root)
+          (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]) $
+        foldr
+          (\b ->
+              Map.insert
+                (SomeID b)
+                (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
+          mempty
+          bounds
+      , _ri_changes =
+        MonoidalMap $
+        Map.singleton
+          (SomeID root)
+          (merge . DMap.fromList $
+            [ UpdateBindingK :=> eUpdate
+            , CommitBindingK :=> eCommit
+            ])
       }
 
   pure (ni', ri)
@@ -258,33 +251,30 @@ renderBoundInfo root nodes ctx a = do
       dContent <*>
       dLocalScope
 
-    decos1 =
-      MonoidalMap $
-      maybe
-        id
-        (\b ->
-            Map.insert
-              (SomeID b)
-              (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
-        binding $
-      Map.singleton
-        (SomeID root)
-        (fold
-          [ (\b -> Endo $ if b then warn else unwarn) <$> eCaptured
-          , Endo info <$ eEnter
-          , Endo uninfo <$ eLeave
-          ])
-
   dScope <- asks _re_localScope
-  let ni' = BoundInfo (ctx { _ctxLocalScope = dScope }) dContent
-
   let
+    ni' = BoundInfo (ctx { _ctxLocalScope = dScope }) dContent
     ri =
       RenderInfo
       { _ri_liveGraph = DMap.singleton root ni'
       , _ri_editInfo = DMap.singleton root $ BoundEditInfo eCaptured
       , _ri_eAction = never
-      , _ri_decos = decos1
+      , _ri_decos =
+        MonoidalMap $
+        maybe
+          id
+          (\b ->
+              Map.insert
+                (SomeID b)
+                (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
+          binding $
+        Map.singleton
+          (SomeID root)
+          (fold
+            [ (\b -> Endo $ if b then warn else unwarn) <$> eCaptured
+            , Endo info <$ eEnter
+            , Endo uninfo <$ eLeave
+            ])
       , _ri_changes = mempty
       }
 
@@ -353,11 +343,9 @@ renderAppInfo ::
   Set (ID Bound) ->
   m (NodeInfo (Dynamic t) Expr, RenderInfo t)
 renderAppInfo root nodes ctx a b vars = do
-  (_, ri1) <-
-    renderExpr a nodes
+  (_, ri1) <- renderExpr a nodes
   text " "
-  (_, ri2) <-
-    renderExpr b nodes
+  (_, ri2) <- renderExpr b nodes
 
   dScope <- asks _re_localScope
   let ni' = AppInfo (ctx { _ctxLocalScope = dScope }) a b (pure vars)
