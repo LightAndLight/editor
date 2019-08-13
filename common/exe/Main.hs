@@ -90,9 +90,9 @@ data Action
   | CloseMenu
 
 data NodeEditInfo t a where
-  BoundEditInfo ::
+  VarEditInfo ::
     Event t Bool -> -- is this edit causing it to be captured
-    NodeEditInfo t Bound
+    NodeEditInfo t Expr
 
 data RenderInfo t
   = RenderInfo
@@ -144,7 +144,7 @@ renderBindingInfo ::
 renderBindingInfo root nodes ctx a = do
   liveGraph <- asks _re_liveGraph
   let
-    support :: Dynamic t (Set (ID Bound)) =
+    support :: Dynamic t (Set (ID Expr)) =
       fromMaybe (pure mempty) $ do
         SomeID par <- _ctxParent ctx
         res <- DMap.lookup par liveGraph
@@ -159,7 +159,7 @@ renderBindingInfo root nodes ctx a = do
     eAnyCaptured :: Event t Bool =
       switchDyn $
       mergeWith (||) .
-      fmap (\(BoundEditInfo eCap) -> eCap) .
+      fmap (\(VarEditInfo eCap) -> eCap) .
       fromMaybe [] .
       foldr
         (\b rest -> (:) <$> DMap.lookup b editInfo <*> rest)
@@ -228,25 +228,26 @@ renderBindingInfo root nodes ctx a = do
 
   pure (ni', ri)
 
-renderBoundInfo ::
+renderVarInfo ::
   forall t m.
   ( DomBuilder t m, MonadHold t m
   , PostBuild t m
   , MonadReader (RenderEnv t) m
   ) =>
-  ID Bound ->
+  ID Expr ->
   DMap ID (NodeInfo Identity) -> -- static graph
   Context Identity -> -- node context
   String -> -- node value
-  m (NodeInfo (Dynamic t) Bound, RenderInfo t)
-renderBoundInfo root nodes ctx a = do
+  Set (ID Expr) -> -- fre vars
+  m (NodeInfo (Dynamic t) Expr, RenderInfo t)
+renderVarInfo root nodes ctx a vars = do
   let binding :: Maybe (ID Binding) = getBinding nodes root
 
   liveGraph <- asks _re_liveGraph
   let
     dLocalScope :: Dynamic t (Map Binding (ID Binding)) =
       fromMaybe (error "local scope missing") $ do
-        BoundInfo c _ <- DMap.lookup root liveGraph
+        VarInfo c _ _ <- DMap.lookup root liveGraph
         pure $ _ctxLocalScope c
 
   eChanges <- asks _re_changes
@@ -275,11 +276,11 @@ renderBoundInfo root nodes ctx a = do
 
   dScope <- asks _re_localScope
   let
-    ni' = BoundInfo (ctx { _ctxLocalScope = dScope }) dContent
+    ni' = VarInfo (ctx { _ctxLocalScope = dScope }) dContent (pure vars)
     ri =
       RenderInfo
       { _ri_liveGraph = DMap.singleton root ni'
-      , _ri_editInfo = DMap.singleton root $ BoundEditInfo eCaptured
+      , _ri_editInfo = DMap.singleton root $ VarEditInfo eCaptured
       , _ri_eAction = never
       , _ri_decos =
         MonoidalMap $
@@ -327,32 +328,6 @@ renderHoleInfo root ctx = do
 
   pure (ni', ri)
 
-renderVarInfo ::
-  ( DomBuilder t m, MonadHold t m, MonadFix m, MonadJSM m
-  , PostBuild t m, TriggerEvent t m
-  , DomBuilderSpace m ~ GhcjsDomSpace
-  , MonadReader (RenderEnv t) m
-  ) =>
-  ID Expr ->
-  DMap ID (NodeInfo Identity) ->
-  Context Identity ->
-  ID Bound ->
-  Set (ID Bound) ->
-  m (NodeInfo (Dynamic t) Expr, RenderInfo t)
-renderVarInfo root nodes ctx val vars = do
-  (_, ri) <- renderExpr val nodes
-
-  dScope <- asks _re_localScope
-  let ni' = VarInfo (ctx { _ctxLocalScope = dScope }) val (pure vars)
-
-  let
-    ri' =
-      ri
-      { _ri_liveGraph = DMap.insert root ni' (_ri_liveGraph ri)
-      }
-
-  pure (ni', ri')
-
 renderAppInfo ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, MonadJSM m
   , PostBuild t m, TriggerEvent t m
@@ -364,7 +339,7 @@ renderAppInfo ::
   Context Identity ->
   ID Expr ->
   ID Expr ->
-  Set (ID Bound) ->
+  Set (ID Expr) ->
   m (NodeInfo (Dynamic t) Expr, RenderInfo t)
 renderAppInfo root nodes ctx a b vars = do
   (_, ri1) <- renderExpr a nodes
@@ -391,7 +366,7 @@ renderLamInfo ::
   Context Identity ->
   ID Binding ->
   ID Expr ->
-  Set (ID Bound) ->
+  Set (ID Expr) ->
   m (NodeInfo (Dynamic t) Expr, RenderInfo t)
 renderLamInfo root nodes ctx a b vars = do
   text "\\"
@@ -476,10 +451,8 @@ renderExpr root nodes =
           case ni of
             BindingInfo ctx (Identity a) ->
               renderBindingInfo root nodes ctx a
-            BoundInfo ctx (Identity a) ->
-              renderBoundInfo root nodes ctx a
             HoleInfo ctx -> renderHoleInfo root ctx
-            VarInfo ctx val (Identity vars) ->
+            VarInfo ctx (Identity val) (Identity vars) ->
               renderVarInfo root nodes ctx val vars
             AppInfo ctx a b (Identity vars) ->
               renderAppInfo root nodes ctx a b vars
@@ -499,9 +472,8 @@ renderExpr root nodes =
           res <- DMap.lookup p liveGraph
           case res of
             BindingInfo{} -> error "impossible - binding is not a parent"
-            BoundInfo{} -> error "impossible - bound is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo{} -> Nothing
+            VarInfo{} -> error "impossible - var is not a parent"
             AppInfo _ a b _ ->
               if SomeID a == SomeID root
               then pure $ SomeID b
@@ -515,9 +487,8 @@ renderExpr root nodes =
           res <- DMap.lookup p liveGraph
           case res of
             BindingInfo{} -> error "impossible - binding is not a parent"
-            BoundInfo{} -> error "impossible - bound is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo{} -> Nothing
+            VarInfo{} -> error "impossible - var is not a parent"
             AppInfo _ a b _ ->
               if SomeID b == SomeID root
               then pure $ SomeID a
@@ -530,9 +501,8 @@ renderExpr root nodes =
         doChild =
           case ni of
             BindingInfo{} -> Nothing
-            BoundInfo{} -> Nothing
             HoleInfo{} -> Nothing
-            VarInfo _ a _ -> Just $ SomeID a
+            VarInfo{} -> Nothing
             AppInfo _ a _ _ -> Just $ SomeID a
             LamInfo _ a _ _ -> Just $ SomeID a
 
@@ -541,9 +511,8 @@ renderExpr root nodes =
           res <- DMap.lookup i liveGraph
           case res of
             BindingInfo{} -> Just $ SomeID i
-            BoundInfo{} -> Just $ SomeID i
             HoleInfo{} -> Just $ SomeID i
-            VarInfo _ a _ -> rightmostLeaf a
+            VarInfo{} -> Just $ SomeID i
             AppInfo _ _ a _ -> rightmostLeaf a
             LamInfo _ _ a _ -> rightmostLeaf a
 
@@ -553,12 +522,8 @@ renderExpr root nodes =
           res <- DMap.lookup p liveGraph
           case res of
             BindingInfo{} -> error "impossible - binding is not a parent"
-            BoundInfo{} -> error "impossible - bound is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo _ a _ ->
-              if SomeID from == SomeID a
-              then doLeafLeft p res
-              else error "bad child ID"
+            VarInfo{} -> error "impossible - var is not a parent"
             AppInfo _ a b _ ->
               if SomeID from == SomeID b
               then rightmostLeaf a
@@ -579,9 +544,8 @@ renderExpr root nodes =
           res <- DMap.lookup i liveGraph
           case res of
             BindingInfo{} -> Just $ SomeID i
-            BoundInfo{} -> Just $ SomeID i
             HoleInfo{} -> Just $ SomeID i
-            VarInfo _ a _ -> leftmostLeaf a
+            VarInfo{} -> Just $ SomeID i
             AppInfo _ a _ _ -> leftmostLeaf a
             LamInfo _ a _ _ -> leftmostLeaf a
 
@@ -591,12 +555,8 @@ renderExpr root nodes =
           res <- DMap.lookup p liveGraph
           case res of
             BindingInfo{} -> error "impossible - binding is not a parent"
-            BoundInfo{} -> error "impossible - bound is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo _ a _ ->
-              if SomeID from == SomeID a
-              then doLeafRight p res
-              else error "bad child ID"
+            VarInfo{} -> error "impossible - var is not a parent"
             AppInfo _ a b _ ->
               if SomeID from == SomeID a
               then leftmostLeaf b
@@ -742,7 +702,7 @@ main =
       e =
         Lam (Binding "f") $
         Lam (Binding "x") $
-        App (App (Var $ Bound "f") (Var $ Bound "x")) (Var $ Bound "x")
+        App (App (Var "f") (Var "x")) (Var "x")
       (eid, enodes, _) = unbuild mempty (Context Nothing mempty) e
     document <- askDocument
     eCloseMenu <- wrapDomEvent document (`on` Events.click) $ pure [CloseMenu]

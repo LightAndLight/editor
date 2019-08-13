@@ -19,7 +19,6 @@ import qualified Data.Set as Set
 
 data ID a where
   ID_Expr :: Int -> ID Expr
-  ID_Bound :: Int -> ID Bound
   ID_Binding :: Int -> ID Binding
 -- fuckn 8.4
 instance Eq (ID a) where
@@ -54,14 +53,11 @@ instance Ord SomeID where
       GGT -> GT
 deriving instance Show SomeID
 
-data Bound = Bound { unBound :: String }
-  deriving (Eq, Ord, Show)
-
 data Binding = Binding { unBinding :: String }
   deriving (Eq, Ord, Show)
 
 data Expr
-  = Var Bound
+  = Var String
   | Hole
   | App Expr Expr
   | Lam Binding Expr
@@ -74,11 +70,6 @@ data Context f
   }
 
 data NodeInfo f a where
-  BoundInfo ::
-    Context f ->
-    f String ->
-    NodeInfo f Bound
-
   BindingInfo ::
     Context f ->
     f String ->
@@ -86,8 +77,8 @@ data NodeInfo f a where
 
   VarInfo ::
     Context f ->
-    ID Bound ->
-    f (Set (ID Bound)) ->
+    f String ->
+    f (Set (ID Expr)) ->
     NodeInfo f Expr
 
   HoleInfo ::
@@ -98,14 +89,14 @@ data NodeInfo f a where
     Context f ->
     ID Expr ->
     ID Expr ->
-    f (Set (ID Bound)) ->
+    f (Set (ID Expr)) ->
     NodeInfo f Expr
 
   LamInfo ::
     Context f ->
     ID Binding ->
     ID Expr ->
-    f (Set (ID Bound)) ->
+    f (Set (ID Expr)) ->
     NodeInfo f Expr
 {-
 deriving instance Eq (NodeInfo a)
@@ -117,17 +108,15 @@ context :: NodeInfo f a -> Context f
 context ni =
   case ni of
     BindingInfo c _ -> c
-    BoundInfo c _ -> c
     HoleInfo c -> c
     VarInfo c _ _ -> c
     AppInfo c _ _ _ -> c
     LamInfo c _ _ _ -> c
 
-freeVars :: Applicative f => NodeInfo f a -> f (Set (ID Bound))
+freeVars :: Applicative f => NodeInfo f a -> f (Set (ID Expr))
 freeVars ni =
   case ni of
     BindingInfo{} -> pure mempty
-    BoundInfo{} -> pure mempty
     HoleInfo{} -> pure mempty
     VarInfo _ _ a -> a
     AppInfo _ _ _ a -> a
@@ -152,17 +141,7 @@ class Unbuild a where
     DMap ID (NodeInfo f) ->
     Context f ->
     a ->
-    (ID a, DMap ID (NodeInfo f), f (Set (ID Bound)))
-
-instance Unbuild Bound where
-  unbuild m ctx (Bound a) =
-    let
-      i' = (ID_Bound $ DMap.size m)
-    in
-      ( i'
-      , DMap.insert i' (BoundInfo ctx $ pure a) m
-      , pure mempty
-      )
+    (ID a, DMap ID (NodeInfo f), f (Set (ID Expr)))
 
 instance Unbuild Binding where
   unbuild m ctx (Binding a) =
@@ -174,12 +153,11 @@ instance Unbuild Binding where
 instance Unbuild Expr where
   unbuild m ctx (Var a) =
     let
-      (a', m', _) = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
-      i' = (ID_Expr $ DMap.size m')
-      fvs = pure $ Set.singleton a'
+      i' = ID_Expr $ DMap.size m
+      fvs = pure $ Set.singleton i'
     in
       ( i'
-      , DMap.insert i' (VarInfo ctx a' fvs) m'
+      , DMap.insert i' (VarInfo ctx (pure a) fvs) m
       , fvs
       )
   unbuild m ctx Hole =
@@ -209,18 +187,17 @@ rebuild m i =
   DMap.lookup i m >>=
   \case
     BindingInfo _ a -> Just $ Binding $ runIdentity a
-    BoundInfo _ a -> Just $ Bound $ runIdentity a
     HoleInfo _ -> Just Hole
-    VarInfo _ val _ -> Var <$> rebuild m val
+    VarInfo _ val _ -> Just $ Var $ runIdentity val
     AppInfo _ a b _ -> App <$> rebuild m a <*> rebuild m b
     LamInfo _ a b _ -> Lam <$> rebuild m a <*> rebuild m b
 
-getBounds :: Applicative f => DMap ID (NodeInfo f) -> ID Binding -> f [ID Bound]
+getBounds :: Applicative f => DMap ID (NodeInfo f) -> ID Binding -> f [ID Expr]
 getBounds m i =
   DMap.foldrWithKey
     (\k v rest ->
        case v of
-         BoundInfo ctx val ->
+         VarInfo ctx val _ ->
            (\vv cc rr -> case Map.lookup (Binding vv) cc of
              -- this variable is not bound by local scope
              Nothing -> rr
@@ -240,12 +217,13 @@ getBounds m i =
 
 getBinding ::
   DMap ID (NodeInfo Identity) ->
-  ID Bound ->
+  ID Expr ->
   Maybe (ID Binding)
 getBinding m i =
   DMap.lookup i m >>=
   \case
-    BoundInfo ctx val ->
+    VarInfo ctx val _ ->
       Map.lookup
         (Binding $ runIdentity val)
         (runIdentity $ _ctxLocalScope ctx)
+    _ -> Nothing
