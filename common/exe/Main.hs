@@ -26,7 +26,6 @@ import Data.Monoid (Endo(..))
 import Data.Dependent.Map (DMap, GCompare)
 import Data.Dependent.Sum (DSum(..))
 import Data.String (fromString)
-import Data.Semigroup (First(..))
 import Data.Set (Set)
 import GHCJS.DOM.EventM (preventDefault, mouseClientXY, on)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
@@ -101,27 +100,19 @@ data RenderInfo t
   , _ri_eAction :: Event t [Action]
   , _ri_decos :: MonoidalMap SomeID (Event t (Endo Deco))
   , _ri_changes :: MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-  , _ri_eCursorTo :: Event t (First SomeID)
   }
 
 instance Reflex t => Semigroup (RenderInfo t) where
-  RenderInfo a b c d e f <> RenderInfo a' b' c' d' e' f' =
-    RenderInfo (a <> a') (b <> b') (c <> c') (d <> d') (e <> e') (f <> f')
+  RenderInfo a b c d e <> RenderInfo a' b' c' d' e' =
+    RenderInfo (a <> a') (b <> b') (c <> c') (d <> d') (e <> e')
 instance Reflex t => Monoid (RenderInfo t) where
-  mempty = RenderInfo mempty mempty mempty mempty mempty mempty
+  mempty = RenderInfo mempty mempty mempty mempty mempty
 
 data RenderEnv t
   = RenderEnv
   { _re_eEnter :: Event t ()
   , _re_eLeave :: Event t ()
-  , _re_eCursorLeafRight :: Event t ()
-  , _re_eCursorLeafLeft :: Event t ()
-  , _re_eCursorSiblingRight :: Event t ()
-  , _re_eCursorSiblingLeft :: Event t ()
-  , _re_eCursorParent :: Event t ()
-  , _re_eCursorChild :: Event t ()
   , _re_eOpenMenu :: Event t (Int, Int)
-  , _re_cursor :: Dynamic t SomeID
   , _re_liveGraph :: DMap ID (NodeInfo (Dynamic t))
   , _re_editInfo :: DMap ID (NodeEditInfo t)
   , _re_localScope :: Dynamic t (Map Binding (ID Binding))
@@ -223,7 +214,6 @@ renderBindingInfo root nodes ctx a = do
             [ UpdateBindingK :=> eUpdate
             , CommitBindingK :=> eCommit
             ])
-      , _ri_eCursorTo = never
       }
 
   pure (ni', ri)
@@ -299,7 +289,6 @@ renderVarInfo root nodes ctx a vars = do
             , Endo uninfo <$ eLeave
             ])
       , _ri_changes = mempty
-      , _ri_eCursorTo = never
       }
 
   pure (ni', ri)
@@ -323,7 +312,6 @@ renderHoleInfo root ctx = do
       , _ri_eAction = never
       , _ri_decos = mempty
       , _ri_changes = mempty
-      , _ri_eCursorTo = never
       }
 
   pure (ni', ri)
@@ -389,6 +377,130 @@ renderLamInfo root nodes ctx a b vars = do
     ri' = ri3 { _ri_liveGraph = DMap.insert root ni' (_ri_liveGraph ri3) }
 
   pure (ni', ri')
+
+getSiblingRight :: ID a -> NodeInfo f a -> DMap ID (NodeInfo (Dynamic t)) -> Maybe SomeID
+getSiblingRight root nnni graph = do
+  SomeID p <- parent nnni
+  res <- DMap.lookup p graph
+  case res of
+    BindingInfo{} -> error "impossible - binding is not a parent"
+    HoleInfo{} -> error "impossible - hole is not a parent"
+    VarInfo{} -> error "impossible - var is not a parent"
+    AppInfo _ a b _ ->
+      if SomeID a == SomeID root
+      then pure $ SomeID b
+      else
+        if SomeID b == SomeID root
+        then Nothing
+        else error "bad child ID"
+    LamInfo _ a b _ ->
+      if SomeID a == SomeID root
+      then pure $ SomeID b
+      else
+        if SomeID b == SomeID root
+        then Nothing
+        else error "bad child ID"
+
+getSiblingLeft :: ID a -> NodeInfo f a -> DMap ID (NodeInfo (Dynamic t)) -> Maybe SomeID
+getSiblingLeft root nnni graph = do
+  SomeID p <- parent nnni
+  res <- DMap.lookup p graph
+  case res of
+    BindingInfo{} -> error "impossible - binding is not a parent"
+    HoleInfo{} -> error "impossible - hole is not a parent"
+    VarInfo{} -> error "impossible - var is not a parent"
+    AppInfo _ a b _ ->
+      if SomeID b == SomeID root
+      then pure $ SomeID a
+      else
+        if SomeID a == SomeID root
+        then Nothing
+        else error "bad child ID"
+    LamInfo _ a b _ ->
+      if SomeID b == SomeID root
+      then pure $ SomeID a
+      else
+        if SomeID a == SomeID root
+        then Nothing
+        else error "bad child ID"
+
+rightmostLeaf :: ID a -> DMap ID (NodeInfo f) -> Maybe SomeID
+rightmostLeaf i graph = do
+  res <- DMap.lookup i graph
+  case res of
+    BindingInfo{} -> Just $ SomeID i
+    HoleInfo{} -> Just $ SomeID i
+    VarInfo{} -> Just $ SomeID i
+    AppInfo _ _ a _ -> rightmostLeaf a graph
+    LamInfo _ _ a _ -> rightmostLeaf a graph
+
+getLeafLeft :: ID a -> NodeInfo f a -> DMap ID (NodeInfo (Dynamic t)) -> Maybe SomeID
+getLeafLeft from nnni graph = do
+  SomeID p <- parent nnni
+  res <- DMap.lookup p graph
+  case res of
+    BindingInfo{} -> error "impossible - binding is not a parent"
+    HoleInfo{} -> error "impossible - hole is not a parent"
+    VarInfo{} -> error "impossible - var is not a parent"
+    AppInfo _ a b _ ->
+      if SomeID from == SomeID b
+      then rightmostLeaf a graph
+      else
+        if SomeID from == SomeID a
+        then getLeafLeft p res graph
+        else error "bad child ID"
+    LamInfo _ a b _ ->
+      if SomeID from == SomeID b
+      then rightmostLeaf a graph
+      else
+        if SomeID from == SomeID a
+        then getLeafLeft p res graph
+        else error "bad child ID"
+
+leftmostLeaf :: ID a -> DMap ID (NodeInfo f) -> Maybe SomeID
+leftmostLeaf i graph = do
+  res <- DMap.lookup i graph
+  case res of
+    BindingInfo{} -> Just $ SomeID i
+    HoleInfo{} -> Just $ SomeID i
+    VarInfo{} -> Just $ SomeID i
+    AppInfo _ a _ _ -> leftmostLeaf a graph
+    LamInfo _ a _ _ -> leftmostLeaf a graph
+
+getLeafRight :: ID a -> NodeInfo f a -> DMap ID (NodeInfo (Dynamic t)) -> Maybe SomeID
+getLeafRight from nnni graph = do
+  SomeID p <- parent nnni
+  res <- DMap.lookup p graph
+  case res of
+    BindingInfo{} -> error "impossible - binding is not a parent"
+    HoleInfo{} -> error "impossible - hole is not a parent"
+    VarInfo{} -> error "impossible - var is not a parent"
+    AppInfo _ a b _ ->
+      if SomeID from == SomeID a
+      then leftmostLeaf b graph
+      else
+        if SomeID from == SomeID b
+        then getLeafRight p res graph
+        else error "bad child ID"
+    LamInfo _ a b _ ->
+      if SomeID from == SomeID a
+      then leftmostLeaf b graph
+      else
+        if SomeID from == SomeID b
+        then getLeafRight p res graph
+        else error "bad child ID"
+
+getParent :: NodeInfo f a -> Maybe SomeID
+getParent nnni = parent nnni
+
+getChild :: NodeInfo f a -> Maybe SomeID
+getChild nnni =
+  case nnni of
+    BindingInfo{} -> Nothing
+    HoleInfo{} -> Nothing
+    VarInfo{} -> Nothing
+    AppInfo _ a _ _ -> Just $ SomeID a
+    LamInfo _ a _ _ -> Just $ SomeID a
 
 renderExpr ::
   forall t m a.
@@ -458,149 +570,7 @@ renderExpr root nodes =
               renderAppInfo root nodes ctx a b vars
             LamInfo ctx a b (Identity vars) ->
               renderLamInfo root nodes ctx a b vars
-      dCursor <- asks _re_cursor
-      liveGraph <- asks _re_liveGraph
-      eCursorLeafRight <- asks _re_eCursorLeafRight
-      eCursorLeafLeft <- asks _re_eCursorLeafLeft
-      eCursorSiblingRight <- asks _re_eCursorSiblingRight
-      eCursorSiblingLeft <- asks _re_eCursorSiblingLeft
-      eCursorParent <- asks _re_eCursorParent
-      eCursorChild <- asks _re_eCursorChild
-      let
-        doSiblingRight = do
-          SomeID p <- parent ni
-          res <- DMap.lookup p liveGraph
-          case res of
-            BindingInfo{} -> error "impossible - binding is not a parent"
-            HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
-              if SomeID a == SomeID root
-              then pure $ SomeID b
-              else Nothing
-            LamInfo _ a b _ ->
-              if SomeID a == SomeID root
-              then pure $ SomeID b
-              else Nothing
-        doSiblingLeft = do
-          SomeID p <- parent ni
-          res <- DMap.lookup p liveGraph
-          case res of
-            BindingInfo{} -> error "impossible - binding is not a parent"
-            HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
-              if SomeID b == SomeID root
-              then pure $ SomeID a
-              else Nothing
-            LamInfo _ a b _ ->
-              if SomeID b == SomeID root
-              then pure $ SomeID a
-              else Nothing
-        doParent = parent ni
-        doChild =
-          case ni of
-            BindingInfo{} -> Nothing
-            HoleInfo{} -> Nothing
-            VarInfo{} -> Nothing
-            AppInfo _ a _ _ -> Just $ SomeID a
-            LamInfo _ a _ _ -> Just $ SomeID a
-
-        rightmostLeaf :: forall x. ID x -> Maybe SomeID
-        rightmostLeaf i = do
-          res <- DMap.lookup i liveGraph
-          case res of
-            BindingInfo{} -> Just $ SomeID i
-            HoleInfo{} -> Just $ SomeID i
-            VarInfo{} -> Just $ SomeID i
-            AppInfo _ _ a _ -> rightmostLeaf a
-            LamInfo _ _ a _ -> rightmostLeaf a
-
-        doLeafLeft :: forall x f. ID x -> NodeInfo f x -> Maybe SomeID
-        doLeafLeft from nnni = do
-          SomeID p <- parent nnni
-          res <- DMap.lookup p liveGraph
-          case res of
-            BindingInfo{} -> error "impossible - binding is not a parent"
-            HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
-              if SomeID from == SomeID b
-              then rightmostLeaf a
-              else
-                if SomeID from == SomeID a
-                then doLeafLeft p res
-                else error "bad child ID"
-            LamInfo _ a b _ ->
-              if SomeID from == SomeID b
-              then rightmostLeaf a
-              else
-                if SomeID from == SomeID a
-                then doLeafLeft p res
-                else error "bad child ID"
-
-        leftmostLeaf :: forall x. ID x -> Maybe SomeID
-        leftmostLeaf i = do
-          res <- DMap.lookup i liveGraph
-          case res of
-            BindingInfo{} -> Just $ SomeID i
-            HoleInfo{} -> Just $ SomeID i
-            VarInfo{} -> Just $ SomeID i
-            AppInfo _ a _ _ -> leftmostLeaf a
-            LamInfo _ a _ _ -> leftmostLeaf a
-
-        doLeafRight :: forall x f. ID x -> NodeInfo f x -> Maybe SomeID
-        doLeafRight from nnni = do
-          SomeID p <- parent nnni
-          res <- DMap.lookup p liveGraph
-          case res of
-            BindingInfo{} -> error "impossible - binding is not a parent"
-            HoleInfo{} -> error "impossible - hole is not a parent"
-            VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
-              if SomeID from == SomeID a
-              then leftmostLeaf b
-              else
-                if SomeID from == SomeID b
-                then doLeafRight p res
-                else error "bad child ID"
-            LamInfo _ a b _ ->
-              if SomeID from == SomeID a
-              then leftmostLeaf b
-              else
-                if SomeID from == SomeID b
-                then doLeafRight p res
-                else error "bad child ID"
-        ri'' =
-          ri'
-          { _ri_eCursorTo =
-            (attachWithMaybe
-               (\i _ -> if i == SomeID root then fmap First doSiblingRight else Nothing)
-               (current dCursor)
-               eCursorSiblingRight) <>
-            (attachWithMaybe
-               (\i _ -> if i == SomeID root then fmap First doSiblingLeft else Nothing)
-               (current dCursor)
-               eCursorSiblingLeft) <>
-            (attachWithMaybe
-               (\i _ -> if i == SomeID root then fmap First doParent else Nothing)
-               (current dCursor)
-               eCursorParent) <>
-            (attachWithMaybe
-               (\i _ -> if i == SomeID root then fmap First doChild else Nothing)
-               (current dCursor)
-               eCursorChild) <>
-            (attachWithMaybe
-               (\i _ -> if i == SomeID root then fmap First (doLeafRight root ni) else Nothing)
-               (current dCursor)
-               eCursorLeafRight) <>
-            (attachWithMaybe
-               (\i _ -> if i == SomeID root then fmap First (doLeafLeft root ni) else Nothing)
-               (current dCursor)
-               eCursorLeafLeft) <>
-            _ri_eCursorTo ri'
-          }
-      pure (nni, ri'')
+      pure (nni, ri')
 
 data Menu
   = Menu
@@ -735,18 +705,19 @@ main =
     ePostBuild <- getPostBuild
     rec
       let
+        eCursorDeco =
+          (<>) (Map.singleton (SomeID eid) (Endo dotted) <$ ePostBuild) $
+          (\i i' ->
+            if i /= i'
+            then Map.fromList [(i, Endo undotted), (i', Endo dotted)]
+            else mempty) <$>
+          current dCursor <@>
+          updated dCursor
         re =
           RenderEnv
           { _re_eEnter = never
           , _re_eLeave = never
-          , _re_eCursorLeafRight = eKeyL
-          , _re_eCursorLeafLeft = eKeyH
-          , _re_eCursorSiblingRight = eKeyRight
-          , _re_eCursorSiblingLeft = eKeyLeft
-          , _re_eCursorParent = eKeyK
-          , _re_eCursorChild = eKeyJ
           , _re_eOpenMenu = never
-          , _re_cursor = dCursor
           , _re_liveGraph = _ri_liveGraph ri
           , _re_editInfo = _ri_editInfo ri
           , _re_localScope = pure mempty
@@ -759,15 +730,51 @@ main =
           , _re_decos =
             fanMap $
             mergeMap (getMonoidalMap $ _ri_decos ri) <>
-            ((\i i' ->
-                if i /= i'
-                then Map.fromList [(i, Endo undotted), (i', Endo dotted)]
-                else mempty) <$>
-             current dCursor <@>
-             updated dCursor) <>
-            (Map.singleton (SomeID eid) (Endo dotted) <$ ePostBuild)
+            eCursorDeco
           }
       (_, ri) <- flip runReaderT re $ renderExpr eid enodes
       eMenuChanges <- menu (eCloseMenu <> _ri_eAction ri)
-      dCursor <- holdDyn (SomeID eid) (coerceEvent $ _ri_eCursorTo ri)
+
+      let
+        eCursorTo =
+          leftmost
+          [ attachWithMaybe
+            (\(SomeID i) _ -> do
+                ni <- DMap.lookup i $ _ri_liveGraph ri
+                getLeafRight i ni $ _ri_liveGraph ri)
+            (current dCursor)
+            eKeyL
+          , attachWithMaybe
+            (\(SomeID i) _ -> do
+                ni <- DMap.lookup i $ _ri_liveGraph ri
+                getLeafLeft i ni $ _ri_liveGraph ri)
+            (current dCursor)
+            eKeyH
+          , attachWithMaybe
+            (\(SomeID i) _ -> do
+                ni <- DMap.lookup i $ _ri_liveGraph ri
+                getSiblingRight i ni $ _ri_liveGraph ri)
+            (current dCursor)
+            eKeyRight
+          , attachWithMaybe
+            (\(SomeID i) _ -> do
+                ni <- DMap.lookup i $ _ri_liveGraph ri
+                getSiblingLeft i ni $ _ri_liveGraph ri)
+            (current dCursor)
+            eKeyLeft
+          , attachWithMaybe
+            (\(SomeID i) _ -> do
+                ni <- DMap.lookup i $ _ri_liveGraph ri
+                getParent ni)
+            (current dCursor)
+            eKeyK
+          , attachWithMaybe
+            (\(SomeID i) _ -> do
+                ni <- DMap.lookup i $ _ri_liveGraph ri
+                getChild ni)
+            (current dCursor)
+            eKeyJ
+          ]
+      dCursor <- holdDyn (SomeID eid) (coerceEvent eCursorTo)
+
     pure ()
