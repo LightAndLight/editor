@@ -14,6 +14,7 @@ import Editor
 
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Reader (MonadReader, runReaderT, asks, local)
+import Control.Monad.Trans (lift)
 import Data.Char (ord)
 import Data.Foldable (fold)
 import Data.Functor.Identity (Identity(..))
@@ -27,12 +28,13 @@ import Data.Dependent.Map (DMap, GCompare)
 import Data.Dependent.Sum (DSum(..))
 import Data.String (fromString)
 import Data.Set (Set)
-import GHCJS.DOM.EventM (preventDefault, mouseClientXY, on)
+import GHCJS.DOM.EventM (preventDefault, mouseClientXY, on, event)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex
 import Reflex.Dom hiding (preventDefault)
 
 import qualified GHCJS.DOM.GlobalEventHandlers as Events
+import qualified JSDOM.Generated.KeyboardEvent as KeyboardEvent
 import qualified Data.Dependent.Map as DMap
 import qualified Data.Map as Map
 import qualified Data.Text as Text
@@ -676,31 +678,33 @@ main =
       (eid, enodes, _) = unbuild mempty (Context Nothing mempty) e
     document <- askDocument
     eCloseMenu <- wrapDomEvent document (`on` Events.click) $ pure [CloseMenu]
-    eDocumentKeyDown <- wrapDomEvent document (`on` Events.keyUp) $ getKeyEvent
+    eDocumentKeyDown <- wrapDomEvent document (`on` Events.keyUp) $ do
+      ev <- event
+      (,) <$> lift (KeyboardEvent.getShiftKey ev) <*> getKeyEvent
     let
       eKeyK =
         fmapMaybe
-          (\c -> if c == fromIntegral (ord 'K') then Just () else Nothing)
+          (\(s, c) -> if not s && c == fromIntegral (ord 'K') then Just () else Nothing)
           eDocumentKeyDown
       eKeyJ =
         fmapMaybe
-          (\c -> if c == fromIntegral (ord 'J') then Just () else Nothing)
+          (\(s, c) -> if not s && c == fromIntegral (ord 'J') then Just () else Nothing)
           eDocumentKeyDown
       eKeyLeft =
         fmapMaybe
-          (\c -> if c == 37 then Just () else Nothing)
+          (\(s, c) -> if s && c == fromIntegral (ord 'H') then Just () else Nothing)
           eDocumentKeyDown
       eKeyRight =
         fmapMaybe
-          (\c -> if c == 39 then Just () else Nothing)
+          (\(s, c) -> if s && c == fromIntegral (ord 'L') then Just () else Nothing)
           eDocumentKeyDown
       eKeyH =
         fmapMaybe
-          (\c -> if c == fromIntegral (ord 'H') then Just () else Nothing)
+          (\(s, c) -> if not s && c == fromIntegral (ord 'H') then Just () else Nothing)
           eDocumentKeyDown
       eKeyL =
         fmapMaybe
-          (\c -> if c == fromIntegral (ord 'L') then Just () else Nothing)
+          (\(s, c) -> if not s && c == fromIntegral (ord 'L') then Just () else Nothing)
           eDocumentKeyDown
     ePostBuild <- getPostBuild
     rec
