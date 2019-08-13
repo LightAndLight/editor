@@ -13,6 +13,7 @@ module Main where
 import Editor
 
 import Control.Monad.Fix (MonadFix)
+import Control.Monad.Reader (MonadReader, runReaderT, asks, local)
 import Data.Foldable (fold)
 import Data.Functor.Identity (Identity(..))
 import Data.Functor.Misc (Const2(..))
@@ -24,7 +25,6 @@ import Data.Monoid (Endo(..))
 import Data.Dependent.Map (DMap, GCompare)
 import Data.Dependent.Sum (DSum(..))
 import Data.String (fromString)
-import Data.Text (Text)
 import Data.Set (Set)
 import GHCJS.DOM.EventM (preventDefault, mouseClientXY, on)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
@@ -35,13 +35,6 @@ import qualified GHCJS.DOM.GlobalEventHandlers as Events
 import qualified Data.Dependent.Map as DMap
 import qualified Data.Map as Map
 import qualified Data.Text as Text
-
-data Color = Grey | Red
-  deriving Show
-
-renderColor :: Color -> Text
-renderColor Grey = "gray"
-renderColor Red = "red"
 
 data Deco = Deco { _decoWarn :: Bool, _decoInfo :: Bool }
 
@@ -88,51 +81,59 @@ data NodeEditInfo t a where
     Event t Bool -> -- is this edit causing it to be captured
     NodeEditInfo t Bound
 
-data RenderState t
-  = RenderState
-  { _rsLiveGraph :: DMap ID (NodeInfo (Dynamic t))
-  , _rsEditInfo :: DMap ID (NodeEditInfo t)
+data RenderInfo t
+  = RenderInfo
+  { _ri_liveGraph :: DMap ID (NodeInfo (Dynamic t))
+  , _ri_editInfo :: DMap ID (NodeEditInfo t)
+  , _ri_eAction :: Event t [Action]
+  , _ri_decos :: MonoidalMap SomeID (Event t (Endo Deco))
+  , _ri_changes :: MonoidalMap SomeID (Event t (DMap ChangeK Identity))
   }
-instance Semigroup (RenderState t) where
-  RenderState a b <> RenderState a' b' = RenderState (a <> a') (b <> b')
-instance Monoid (RenderState t) where
-  mempty = RenderState mempty mempty
+
+instance Reflex t => Semigroup (RenderInfo t) where
+  RenderInfo a b c d e <> RenderInfo a' b' c' d' e' =
+    RenderInfo (a <> a') (b <> b') (c <> c') (d <> d') (e <> e')
+instance Reflex t => Monoid (RenderInfo t) where
+  mempty = RenderInfo mempty mempty mempty mempty mempty
+
+data RenderEnv t
+  = RenderEnv
+  { _re_eEnter :: Event t ()
+  , _re_eLeave :: Event t ()
+  , _re_eOpenMenu :: Event t (Int, Int)
+  , _re_liveGraph :: DMap ID (NodeInfo (Dynamic t))
+  , _re_editInfo :: DMap ID (NodeEditInfo t)
+  , _re_localScope :: Dynamic t (Map Binding (ID Binding))
+  , _re_changes :: EventSelector t ChangeIdK
+  , _re_decos :: EventSelector t (Const2 SomeID (Endo Deco))
+  }
 
 renderBindingInfo ::
   forall t m.
   ( DomBuilder t m, MonadHold t m, MonadFix m
   , PostBuild t m
   , DomBuilderSpace m ~ GhcjsDomSpace
+  , MonadReader (RenderEnv t) m
   ) =>
-  ID Binding -> -- node id
+  ID Binding {- ^ node id -} ->
   DMap ID (NodeInfo Identity) -> -- static graph
-  EventSelector t ChangeIdK -> -- change events
-  Event t () -> -- mouse over node
-  Event t () -> -- mouse exit node
-  Event t (Int, Int) -> -- right click
-  Dynamic t (Map Binding (ID Binding)) -> -- local scope
-  RenderState t ->
   Context Identity -> -- node context
   String -> -- node value
-  m
-    ( NodeInfo (Dynamic t) Binding
-    , RenderState t
-    , Event t [Action]
-    , MonoidalMap SomeID (Event t (Endo Deco))
-    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-    )
-renderBindingInfo root nodes eChanges eEnter eLeave eOpenMenu dScope rs ctx a = do
+  m (NodeInfo (Dynamic t) Binding, RenderInfo t)
+renderBindingInfo root nodes ctx a = do
+  liveGraph <- asks _re_liveGraph
   let
     support :: Dynamic t (Set (ID Bound)) =
       fromMaybe (pure mempty) $ do
         SomeID par <- _ctxParent ctx
-        res <- DMap.lookup par (_rsLiveGraph rs)
+        res <- DMap.lookup par liveGraph
         case res of
           LamInfo _ _ bdy _ -> do
-            res' <- DMap.lookup bdy (_rsLiveGraph rs)
+            res' <- DMap.lookup bdy liveGraph
             pure $ freeVars res'
           _ -> error "binding not attached to lambda"
 
+  editInfo <- asks _re_editInfo
   let
     eAnyCaptured :: Event t Bool =
       switchDyn $
@@ -140,10 +141,11 @@ renderBindingInfo root nodes eChanges eEnter eLeave eOpenMenu dScope rs ctx a = 
       fmap (\(BoundEditInfo eCap) -> eCap) .
       fromMaybe [] .
       foldr
-        (\b rest -> (:) <$> DMap.lookup b (_rsEditInfo rs) <*> rest)
+        (\b rest -> (:) <$> DMap.lookup b editInfo <*> rest)
         (Just []) <$>
       support
   bNotCaptured <- hold True $ fmapCheap not eAnyCaptured
+  eChanges <- asks _re_changes
   let eEditBinding = select eChanges $ ChangeIdK (SomeID root) EditBindingK
   rec
     let dContent = dControls >>= fst
@@ -164,6 +166,10 @@ renderBindingInfo root nodes eChanges eEnter eLeave eOpenMenu dScope rs ctx a = 
             current dContent <@
             eEditBinding
           ])
+
+  eOpenMenu <- asks _re_eOpenMenu
+  eEnter <- asks _re_eEnter
+  eLeave <- asks _re_eLeave
   let
     changes1 =
       MonoidalMap $
@@ -192,53 +198,43 @@ renderBindingInfo root nodes eChanges eEnter eLeave eOpenMenu dScope rs ctx a = 
       (\(x, y) -> [OpenMenu (SomeID root) x y [Rename]]) <$>
       eOpenMenu
 
+  dScope <- asks _re_localScope
   let ni' = BindingInfo (ctx { _ctxLocalScope = dScope }) dContent
 
   let
-    rs' =
-      RenderState
-      { _rsLiveGraph = DMap.singleton root ni'
-      , _rsEditInfo = mempty
+    ri =
+      RenderInfo
+      { _ri_liveGraph = DMap.singleton root ni'
+      , _ri_editInfo = mempty
+      , _ri_eAction = eAction'
+      , _ri_decos = decos1
+      , _ri_changes = changes1
       }
 
-  pure
-    ( ni'
-    , rs'
-    , eAction'
-    , decos1
-    , changes1
-    )
+  pure (ni', ri)
 
 renderBoundInfo ::
   forall t m.
   ( DomBuilder t m, MonadHold t m
   , PostBuild t m
+  , MonadReader (RenderEnv t) m
   ) =>
   ID Bound ->
   DMap ID (NodeInfo Identity) -> -- static graph
-  EventSelector t ChangeIdK -> -- change events
-  Event t () -> -- mouse over
-  Event t () -> -- mouse exit
-  Dynamic t (Map Binding (ID Binding)) -> -- local scope
-  RenderState t ->
   Context Identity -> -- node context
   String -> -- node value
-  m
-    ( NodeInfo (Dynamic t) Bound
-    , RenderState t
-    , Event t [Action]
-    , MonoidalMap SomeID (Event t (Endo Deco))
-    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-    )
-renderBoundInfo root nodes eChanges eEnter eLeave dScope rs ctx a = do
+  m (NodeInfo (Dynamic t) Bound, RenderInfo t)
+renderBoundInfo root nodes ctx a = do
   let binding :: Maybe (ID Binding) = getBinding nodes root
 
+  liveGraph <- asks _re_liveGraph
   let
     dLocalScope :: Dynamic t (Map Binding (ID Binding)) =
       fromMaybe (error "local scope missing") $ do
-        BoundInfo c _ <- DMap.lookup root (_rsLiveGraph rs)
+        BoundInfo c _ <- DMap.lookup root liveGraph
         pure $ _ctxLocalScope c
 
+  eChanges <- asks _re_changes
   let
     eUpdateBinding :: Event t String =
       fromMaybe never $ do
@@ -249,6 +245,8 @@ renderBoundInfo root nodes eChanges eEnter eLeave dScope rs ctx a = do
 
   dynText $ fromString <$> dContent
 
+  eEnter <- asks _re_eEnter
+  eLeave <- asks _re_eLeave
   let
     eCaptured :: Event t Bool =
       updated $
@@ -277,167 +275,133 @@ renderBoundInfo root nodes eChanges eEnter eLeave dScope rs ctx a = do
           , Endo uninfo <$ eLeave
           ])
 
+  dScope <- asks _re_localScope
   let ni' = BoundInfo (ctx { _ctxLocalScope = dScope }) dContent
 
   let
-    rs' =
-      RenderState
-      { _rsLiveGraph = DMap.singleton root ni'
-      , _rsEditInfo = DMap.singleton root $ BoundEditInfo eCaptured
+    ri =
+      RenderInfo
+      { _ri_liveGraph = DMap.singleton root ni'
+      , _ri_editInfo = DMap.singleton root $ BoundEditInfo eCaptured
+      , _ri_eAction = never
+      , _ri_decos = decos1
+      , _ri_changes = mempty
       }
 
-  pure
-    ( ni'
-    , rs'
-    , never
-    , decos1
-    , mempty
-    )
+  pure (ni', ri)
 
 renderHoleInfo ::
-  DomBuilder t m =>
+  (DomBuilder t m, MonadReader (RenderEnv t) m) =>
   ID Expr ->
-  Dynamic t (Map Binding (ID Binding)) ->
-  RenderState t ->
   Context Identity ->
-  m
-    ( NodeInfo (Dynamic t) Expr
-    , RenderState t
-    , Event t [Action]
-    , MonoidalMap SomeID (Event t (Endo Deco))
-    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-    )
-renderHoleInfo root dScope _ ctx = do
+  m (NodeInfo (Dynamic t) Expr, RenderInfo t)
+renderHoleInfo root ctx = do
   text "_"
 
+  dScope <- asks _re_localScope
   let ni' = HoleInfo (ctx { _ctxLocalScope = dScope })
 
-  let rs' = RenderState { _rsLiveGraph = DMap.singleton root ni', _rsEditInfo = mempty }
+  let
+    ri =
+      RenderInfo
+      { _ri_liveGraph = DMap.singleton root ni'
+      , _ri_editInfo = mempty
+      , _ri_eAction = never
+      , _ri_decos = mempty
+      , _ri_changes = mempty
+      }
 
-  pure (ni', rs', never, mempty, mempty)
+  pure (ni', ri)
 
 renderVarInfo ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, MonadJSM m
   , PostBuild t m, TriggerEvent t m
   , DomBuilderSpace m ~ GhcjsDomSpace
+  , MonadReader (RenderEnv t) m
   ) =>
   ID Expr ->
   DMap ID (NodeInfo Identity) ->
-  EventSelector t ChangeIdK ->
-  EventSelector t (Const2 SomeID (Endo Deco)) ->
-  Dynamic t (Map Binding (ID Binding)) ->
-  RenderState t ->
   Context Identity ->
   ID Bound ->
   Set (ID Bound) ->
-  m
-    ( NodeInfo (Dynamic t) Expr
-    , RenderState t
-    , Event t [Action]
-    , MonoidalMap SomeID (Event t (Endo Deco))
-    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-    )
-renderVarInfo root nodes eChanges eDecos dScope rs ctx val vars = do
-  (_, rs1, eActions1, decos1, changes1) <-
-    renderExpr (val, nodes) eDecos eChanges dScope rs
+  m (NodeInfo (Dynamic t) Expr, RenderInfo t)
+renderVarInfo root nodes ctx val vars = do
+  (_, ri) <- renderExpr val nodes
 
+  dScope <- asks _re_localScope
   let ni' = VarInfo (ctx { _ctxLocalScope = dScope }) val (pure vars)
 
-  let rs' = rs1 { _rsLiveGraph = DMap.insert root ni' (_rsLiveGraph rs1) }
+  let
+    ri' =
+      ri
+      { _ri_liveGraph = DMap.insert root ni' (_ri_liveGraph ri)
+      }
 
-  pure (ni', rs', eActions1, decos1, changes1)
+  pure (ni', ri')
 
 renderAppInfo ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, MonadJSM m
   , PostBuild t m, TriggerEvent t m
   , DomBuilderSpace m ~ GhcjsDomSpace
+  , MonadReader (RenderEnv t) m
   ) =>
   ID Expr ->
   DMap ID (NodeInfo Identity) ->
-  EventSelector t ChangeIdK ->
-  EventSelector t (Const2 SomeID (Endo Deco)) ->
-  Dynamic t (Map Binding (ID Binding)) ->
-  RenderState t ->
   Context Identity ->
   ID Expr ->
   ID Expr ->
   Set (ID Bound) ->
-  m
-    ( NodeInfo (Dynamic t) Expr
-    , RenderState t
-    , Event t [Action]
-    , MonoidalMap SomeID (Event t (Endo Deco))
-    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-    )
-renderAppInfo root nodes eChanges eDecos dScope rs ctx a b vars = do
-  (_, rs1, eActions1, decos1, changes1) <-
-    renderExpr (a, nodes) eDecos eChanges dScope rs
+  m (NodeInfo (Dynamic t) Expr, RenderInfo t)
+renderAppInfo root nodes ctx a b vars = do
+  (_, ri1) <-
+    renderExpr a nodes
   text " "
-  (_, rs2, eActions2, decos2, changes2) <-
-    renderExpr (b, nodes) eDecos eChanges dScope rs
+  (_, ri2) <-
+    renderExpr b nodes
 
+  dScope <- asks _re_localScope
   let ni' = AppInfo (ctx { _ctxLocalScope = dScope }) a b (pure vars)
 
   let
-    rs3 = rs1 <> rs2
-    rs' = rs3 { _rsLiveGraph = DMap.insert root ni' (_rsLiveGraph rs3) }
+    ri3 = ri1 <> ri2
+    ri' = ri3 { _ri_liveGraph = DMap.insert root ni' (_ri_liveGraph ri3) }
 
-  pure
-    ( ni'
-    , rs'
-    , eActions1 <> eActions2
-    , decos1 <> decos2
-    , changes1 <> changes2
-    )
+  pure (ni', ri')
 
 renderLamInfo ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, MonadJSM m
   , PostBuild t m, TriggerEvent t m
   , DomBuilderSpace m ~ GhcjsDomSpace
+  , MonadReader (RenderEnv t) m
   ) =>
   ID Expr ->
   DMap ID (NodeInfo Identity) ->
-  EventSelector t ChangeIdK ->
-  EventSelector t (Const2 SomeID (Endo Deco)) ->
-  Dynamic t (Map Binding (ID Binding)) ->
-  RenderState t ->
   Context Identity ->
   ID Binding ->
   ID Expr ->
   Set (ID Bound) ->
-  m
-    ( NodeInfo (Dynamic t) Expr
-    , RenderState t
-    , Event t [Action]
-    , MonoidalMap SomeID (Event t (Endo Deco))
-    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-    )
-renderLamInfo root nodes eChanges eDecos dScope rs ctx a b vars = do
+  m (NodeInfo (Dynamic t) Expr, RenderInfo t)
+renderLamInfo root nodes ctx a b vars = do
   text "\\"
-  (BindingInfo _ dBindingVal, rs1, eActions1, decos1, changes1) <-
-    renderExpr (a, nodes) eDecos eChanges dScope rs
+  (BindingInfo _ dBindingVal, ri1) <- renderExpr a nodes
   text " -> "
-  (_, rs2, eActions2, decos2, changes2) <-
-    renderExpr
-      (b, nodes)
-      eDecos
-      eChanges
-      (flip Map.insert a . Binding <$> dBindingVal <*> dScope)
-      rs
+  (_, ri2) <-
+    local
+      (\re ->
+       re
+         { _re_localScope =
+           flip Map.insert a . Binding <$> dBindingVal <*> _re_localScope re
+         })
+      (renderExpr b nodes)
 
+  dScope <- asks _re_localScope
   let ni' = LamInfo (ctx { _ctxLocalScope = dScope }) a b (pure vars)
 
   let
-    rs3 = rs1 <> rs2
-    rs' = rs3 { _rsLiveGraph = DMap.insert root ni' (_rsLiveGraph rs3) }
+    ri3 = ri1 <> ri2
+    ri' = ri3 { _ri_liveGraph = DMap.insert root ni' (_ri_liveGraph ri3) }
 
-  pure
-    ( ni'
-    , rs'
-    , eActions1 <> eActions2
-    , decos1 <> decos2
-    , changes1 <> changes2
-    )
+  pure (ni', ri')
 
 renderExpr ::
   forall t m a.
@@ -446,26 +410,18 @@ renderExpr ::
   , MonadJSM m
   , DomBuilderSpace m ~ GhcjsDomSpace
   , MonadFix m
+  , MonadReader (RenderEnv t) m
   ) =>
-  (ID a, DMap ID (NodeInfo Identity)) ->
-  EventSelector t (Const2 SomeID (Endo Deco)) ->
-  EventSelector t ChangeIdK ->
-  Dynamic t (Map Binding (ID Binding)) -> -- localscope
-  RenderState t ->
-  m
-    ( NodeInfo (Dynamic t) a
-    , RenderState t
-    , Event t [Action]
-    , MonoidalMap SomeID (Event t (Endo Deco))
-    , MonoidalMap SomeID (Event t (DMap ChangeK Identity))
-    )
-renderExpr (root, nodes) eDecos eChanges dScope rs = do
+  ID a ->
+  DMap ID (NodeInfo Identity) ->
+  m (NodeInfo (Dynamic t) a, RenderInfo t)
+renderExpr root nodes =
   case DMap.lookup root nodes of
     Nothing -> do
       text $ fromString (show root) <> "Not found"
-      let rs' = RenderState { _rsLiveGraph = mempty, _rsEditInfo = mempty }
-      pure (error "missing node info", rs', never, mempty, mempty)
+      pure (error "missing node info", mempty)
     Just ni -> do
+      eDecos <- asks _re_decos
       rec
         let eEnter :: Event t () = domEvent Mouseenter theSpan
         let eLeave :: Event t () = domEvent Mouseleave theSpan
@@ -473,11 +429,13 @@ renderExpr (root, nodes) eDecos eChanges dScope rs = do
           wrapDomEvent (_element_raw theSpan) (elementOnEventName Contextmenu) $ do
             preventDefault
             mouseClientXY
+
         dDeco <-
           foldDyn
             (($) . appEndo)
             emptyDeco
             (select eDecos (Const2 $ SomeID root))
+
         let
           dStyling =
             (\(Deco w i) ->
@@ -488,21 +446,23 @@ renderExpr (root, nodes) eDecos eChanges dScope rs = do
                   then "style" =: "background-color: grey"
                   else mempty) <$>
             dDeco
-        (theSpan, (nni, rs', eActions, decos', changes')) <-
-          elDynAttr' "span" (("id" =: fromString (show root) <>) <$> dStyling) $
+
+        (theSpan, (nni, ri')) <-
+          elDynAttr' "span" (("id" =: fromString (show root) <>) <$> dStyling) .
+          local (\re -> re { _re_eEnter = eEnter, _re_eLeave = eLeave, _re_eOpenMenu = eOpenMenu }) $
           case ni of
             BindingInfo ctx (Identity a) ->
-              renderBindingInfo root nodes eChanges eEnter eLeave eOpenMenu dScope rs ctx a
+              renderBindingInfo root nodes ctx a
             BoundInfo ctx (Identity a) ->
-              renderBoundInfo root nodes eChanges eEnter eLeave dScope rs ctx a
-            HoleInfo ctx -> renderHoleInfo root dScope rs ctx
+              renderBoundInfo root nodes ctx a
+            HoleInfo ctx -> renderHoleInfo root ctx
             VarInfo ctx val (Identity vars) ->
-              renderVarInfo root nodes eChanges eDecos dScope rs ctx val vars
+              renderVarInfo root nodes ctx val vars
             AppInfo ctx a b (Identity vars) ->
-              renderAppInfo root nodes eChanges eDecos dScope rs ctx a b vars
+              renderAppInfo root nodes ctx a b vars
             LamInfo ctx a b (Identity vars) ->
-              renderLamInfo root nodes eChanges eDecos dScope rs ctx a b vars
-      pure (nni, rs', eActions, decos', changes')
+              renderLamInfo root nodes ctx a b vars
+      pure (nni, ri')
 
 data Menu
   = Menu
@@ -512,7 +472,6 @@ data Menu
   , _menu_display :: Bool
   , _menu_items :: [MenuItem]
   }
-
 
 menuItem ::
   forall t m.
@@ -610,12 +569,23 @@ main =
     document <- askDocument
     eCloseMenu <- wrapDomEvent document (`on` Events.click) $ pure [CloseMenu]
     rec
-      (_, rs, eActions, MonoidalMap decos, MonoidalMap changes) <-
-        renderExpr
-          (eid, enodes)
-          (fanMap $ mergeMap decos)
-          (fan $ fmap (nestingMaps ChangeIdK) (mergeMap changes) <> eMenuChanges)
-          (pure mempty)
-          rs
-      eMenuChanges <- menu (eCloseMenu <> eActions)
+      let
+        re =
+          RenderEnv
+          { _re_eEnter = never
+          , _re_eLeave = never
+          , _re_eOpenMenu = never
+          , _re_liveGraph = _ri_liveGraph ri
+          , _re_editInfo = _ri_editInfo ri
+          , _re_localScope = pure mempty
+          , _re_changes =
+            fan $
+            fmap
+              (nestingMaps ChangeIdK)
+              (mergeMap $ getMonoidalMap $ _ri_changes ri) <>
+            eMenuChanges
+          , _re_decos = fanMap $ mergeMap $ getMonoidalMap $ _ri_decos ri
+          }
+      (_, ri) <- flip runReaderT re $ renderExpr eid enodes
+      eMenuChanges <- menu (eCloseMenu <> _ri_eAction ri)
     pure ()
