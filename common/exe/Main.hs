@@ -54,13 +54,13 @@ uninfo :: Deco -> Deco
 uninfo d = d { _decoInfo = False }
 
 data Change
-  = EditBinding
+  = RenameBinding
   | UpdateBinding String
   | CommitBinding
   deriving Show
 
 data ChangeK a where
-  EditBindingK :: ChangeK ()
+  RenameBindingK :: ChangeK ()
   UpdateBindingK :: ChangeK String
   CommitBindingK :: ChangeK ()
 deriveGEq ''ChangeK
@@ -146,7 +146,7 @@ renderBindingInfo root nodes ctx a = do
       support
   bNotCaptured <- hold True $ fmapCheap not eAnyCaptured
   eChanges <- asks _re_changes
-  let eEditBinding = select eChanges $ ChangeIdK (SomeID root) EditBindingK
+  let eRenameBinding = select eChanges $ ChangeIdK (SomeID root) RenameBindingK
   rec
     let dContent = dControls >>= fst
     let eCommit = switchDyn $ snd <$> dControls
@@ -164,7 +164,7 @@ renderBindingInfo root nodes ctx a = do
               (textInput $
                 TextInputConfig "text" (fromString val) never (constDyn mempty))) <$>
             current dContent <@
-            eEditBinding
+            eRenameBinding
           ])
 
   eOpenMenu <- asks _re_eOpenMenu
@@ -485,7 +485,7 @@ menuItem i mi =
         (theSpan, _) <- elDynAttr' "span" dAttrs $ text "rename"
       pure $
         case i of
-          SomeID ID_Binding{} -> DMap.singleton (ChangeIdK i EditBindingK) (pure ()) <$ eClick
+          SomeID ID_Binding{} -> DMap.singleton (ChangeIdK i RenameBindingK) (pure ()) <$ eClick
           _ -> never
 
 menu ::
