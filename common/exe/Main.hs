@@ -97,9 +97,15 @@ data NodeEditInfo t a where
     Event t Bool -> -- is this edit causing it to be captured
     NodeEditInfo t Expr
 
+newtype DynamicNodeInfo t a
+  = DynamicNodeInfo
+  { unDynamicNodeInfo ::
+      Dynamic t (NodeInfo (Dynamic t) a)
+  }
+
 data RenderInfo t
   = RenderInfo
-  { _ri_liveGraph :: DMap ID (Compose (Dynamic t) (NodeInfo (Dynamic t)))
+  { _ri_liveGraph :: DMap ID (DynamicNodeInfo t)
   , _ri_editInfo :: DMap ID (NodeEditInfo t)
   , _ri_eAction :: Event t [Action]
   , _ri_decos :: MonoidalMap SomeID (Event t (Endo Deco))
@@ -406,37 +412,37 @@ getSiblingRight root nnni graph = do
         else error "bad child ID"
 
 getSiblingLeft ::
+  Reflex t =>
   ID a ->
   NodeInfo f a ->
-  DMap ID (Compose (Dynamic t) (NodeInfo (Dynamic t))) ->
-  Maybe SomeID
+  DMap ID (DynamicNodeInfo t) ->
+  Dynamic t (Maybe SomeID)
 getSiblingLeft root nnni graph = do
-  SomeID p <- parent nnni
-  -- dNode :: Maybe (Dynamic t (NodeInfo (Dynamic t) _))
-  Compose dNode <- DMap.lookup p graph
-  _
-{-
-  SomeID p <- parent nnni
-  res <- DMap.lookup p graph
-  case res of
-    BindingInfo{} -> error "impossible - binding is not a parent"
-    HoleInfo{} -> error "impossible - hole is not a parent"
-    VarInfo{} -> error "impossible - var is not a parent"
-    AppInfo _ a b _ ->
-      if SomeID b == SomeID root
-      then pure $ SomeID a
-      else
-        if SomeID a == SomeID root
-        then Nothing
-        else error "bad child ID"
-    LamInfo _ a b _ ->
-      if SomeID b == SomeID root
-      then pure $ SomeID a
-      else
-        if SomeID a == SomeID root
-        then Nothing
-        else error "bad child ID"
--}
+  case parent nnni of
+    Nothing -> pure Nothing
+    Just (SomeID p) ->
+      case DMap.lookup p graph of
+        Nothing -> pure Nothing
+        Just (DynamicNodeInfo dNode) -> do
+          node <- dNode
+          case node of
+            BindingInfo{} -> error "impossible - binding is not a parent"
+            HoleInfo{} -> error "impossible - hole is not a parent"
+            VarInfo{} -> error "impossible - var is not a parent"
+            AppInfo _ a b _ ->
+              if SomeID b == SomeID root
+              then pure . Just $ SomeID a
+              else
+                if SomeID a == SomeID root
+                then pure Nothing
+                else error "bad child ID"
+            LamInfo _ a b _ ->
+              if SomeID b == SomeID root
+              then pure . Just $ SomeID a
+              else
+                if SomeID a == SomeID root
+                then pure Nothing
+                else error "bad child ID"
 
 rightmostLeaf :: ID a -> DMap ID (NodeInfo f) -> Maybe SomeID
 rightmostLeaf i graph = do
@@ -756,19 +762,19 @@ main =
           leftmost
           [ attachWithMaybe
             (\(SomeID i) _ -> do
-                Compose ni <- DMap.lookup i $ _ri_liveGraph ri
+                DynamicNodeInfo ni <- DMap.lookup i $ _ri_liveGraph ri
                 getLeafRight i ni $ _ri_liveGraph ri)
             (current dCursor)
             eKeyL
           , attachWithMaybe
             (\(SomeID i) _ -> do
-                Compose ni <- DMap.lookup i $ _ri_liveGraph ri
+                DynamicNodeInfo ni <- DMap.lookup i $ _ri_liveGraph ri
                 getLeafLeft i ni $ _ri_liveGraph ri)
             (current dCursor)
             eKeyH
           , attachWithMaybe
             (\(SomeID i) _ -> do
-                Compose ni <- DMap.lookup i $ _ri_liveGraph ri
+                DynamicNodeInfo ni <- DMap.lookup i $ _ri_liveGraph ri
                 getSiblingRight i ni $ _ri_liveGraph ri)
             (current dCursor)
             eKeyRight
@@ -776,15 +782,17 @@ main =
             const
             (current $ do
                SomeID i <- dCursor
-               let mdni = getCompose <$> DMap.lookup i (_ri_liveGraph ri)
+               let mdni = unDynamicNodeInfo <$> DMap.lookup i (_ri_liveGraph ri)
                mni <- sequence mdni
-               pure $ mni >>= \ni -> getSiblingLeft i ni (_ri_liveGraph ri))
+               case mni of
+                 Nothing -> pure Nothing
+                 Just ni -> getSiblingLeft i ni (_ri_liveGraph ri))
             eKeyLeft
           , attachWithMaybe
             const
             (current $ do
                SomeID i <- dCursor
-               let mdni = getCompose <$> DMap.lookup i (_ri_liveGraph ri)
+               let mdni = unDynamicNodeInfo <$> DMap.lookup i (_ri_liveGraph ri)
                mni <- sequence mdni
                pure $ mni >>= getParent)
             eKeyK
@@ -792,7 +800,7 @@ main =
             const
             (current $ do
                SomeID i <- dCursor
-               let mdni = getCompose <$> DMap.lookup i (_ri_liveGraph ri)
+               let mdni = unDynamicNodeInfo <$> DMap.lookup i (_ri_liveGraph ri)
                mni <- sequence mdni
                pure $ mni >>= getChild)
             eKeyJ
