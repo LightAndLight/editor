@@ -37,6 +37,7 @@ import qualified GHCJS.DOM.GlobalEventHandlers as Events
 import qualified JSDOM.Generated.KeyboardEvent as KeyboardEvent
 import qualified Data.Dependent.Map as DMap
 import qualified Data.Map as Map
+import qualified Data.Map.Monoidal as MonoidalMap
 import qualified Data.Text as Text
 
 data Deco
@@ -108,7 +109,7 @@ data RenderInfo t
   { _ri_liveGraph :: DMap ID (DynamicNodeInfo t)
   , _ri_editInfo :: DMap ID (NodeEditInfo t)
   , _ri_eAction :: Event t [Action]
-  , _ri_decos :: MonoidalMap SomeID (Event t (Endo Deco))
+  , _ri_decos :: Event t (MonoidalMap SomeID (Endo Deco))
   , _ri_changes :: MonoidalMap SomeID (Event t (DMap ChangeK Identity))
   }
 
@@ -182,17 +183,17 @@ renderBindingInfo root nodes ctx a = do
       widgetHold
         ((pure a, never) <$ text (fromString a))
         (leftmost
-          [ (\val -> (pure val, never) <$ text (fromString val)) <$>
-            current dContent <@
-            gate bNotCaptured eCommit
-          , (\val ->
-              fmap
-              (\ti -> (Text.unpack <$> _textInput_value ti, keypress Enter ti))
-              (textInput $
-                TextInputConfig "text" (fromString val) never (constDyn mempty))) <$>
-            current dContent <@
-            eRenameBinding
-          ])
+         [ (\val -> (pure val, never) <$ text (fromString val)) <$>
+           current dContent <@
+           gate bNotCaptured eCommit
+         , (\val ->
+             fmap
+             (\ti -> (Text.unpack <$> _textInput_value ti, keypress Enter ti))
+             (textInput $
+               TextInputConfig "text" (fromString val) never (constDyn mempty))) <$>
+           current dContent <@
+           eRenameBinding
+         ])
 
   eOpenMenu <- asks _re_eOpenMenu
   eEnter <- asks _re_eEnter
@@ -210,16 +211,16 @@ renderBindingInfo root nodes ctx a = do
         (\(x, y) -> [OpenMenu (SomeID root) x y [Rename]]) <$>
         eOpenMenu
       , _ri_decos =
-        MonoidalMap $
-        Map.insert
-          (SomeID root)
-          (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]) $
-        foldr
+        fold
+          [ MonoidalMap.singleton (SomeID root) (Endo info) <$ eEnter
+          , MonoidalMap.singleton (SomeID root) (Endo uninfo) <$ eLeave
+          ] <>
+        foldMap
           (\b ->
-              Map.insert
-                (SomeID b)
-                (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
-          mempty
+           fold
+             [ MonoidalMap.singleton (SomeID b) (Endo info) <$ eEnter
+             , MonoidalMap.singleton (SomeID b) (Endo uninfo) <$ eLeave
+             ])
           bounds
       , _ri_changes =
         MonoidalMap $
@@ -284,37 +285,27 @@ renderVarInfo root nodes ctx a vars = do
       dLocalScope
 
   dScope <- asks _re_localScope
-  let eDeleteNode = select eChanges $ ChangeIdK (SomeID root) DeleteNodeK
-  rec
-    dni <-
-      holdDyn
-        (VarInfo (ctx { _ctxLocalScope = dScope }) dContent (pure vars))
-        ((\old -> HoleInfo (context old)) <$>
-         current dni <@
-         eDeleteNode)
   let
-    ni' = DynamicNodeInfo dni
+    ni' = DynamicNodeInfo $ pure $ VarInfo (ctx { _ctxLocalScope = dScope }) dContent (pure vars)
     ri =
       RenderInfo
       { _ri_liveGraph = DMap.singleton root ni'
       , _ri_editInfo = DMap.singleton root $ VarEditInfo eCaptured
       , _ri_eAction = never
       , _ri_decos =
-        MonoidalMap $
-        maybe
-          id
+        foldMap
           (\b ->
-              Map.insert
-                (SomeID b)
-                (fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]))
-          binding $
-        Map.singleton
-          (SomeID root)
-          (fold
-            [ (\b -> Endo $ if b then warn else unwarn) <$> eCaptured
-            , Endo info <$ eEnter
-            , Endo uninfo <$ eLeave
-            ])
+             fold
+             [ MonoidalMap.singleton (SomeID b) (Endo info) <$ eEnter
+             , MonoidalMap.singleton (SomeID b) (Endo uninfo) <$ eLeave
+             ])
+          binding <>
+        fold
+          [ (\b -> MonoidalMap.singleton (SomeID root) . Endo $ if b then warn else unwarn) <$>
+            eCaptured
+          , MonoidalMap.singleton (SomeID root) (Endo info) <$ eEnter
+          , MonoidalMap.singleton (SomeID root) (Endo uninfo) <$ eLeave
+          ]
       , _ri_changes = mempty
       }
 
@@ -587,35 +578,79 @@ getChild nnni =
 
 nodeInfoWidget ::
   forall t m a.
-  ( DomBuilder t m
+  ( DomBuilder t m, MonadHold t m, MonadFix m
   , PostBuild t m
+  , MonadReader (RenderEnv t) m
   ) =>
   DMap ID (DynamicNodeInfo t) ->
   ID a ->
-  m ()
+  m (Event t (MonoidalMap SomeID (Endo Deco)))
 nodeInfoWidget graph i =
   case DMap.lookup i graph of
-    Nothing -> text "NOT FOUND"
-    Just (DynamicNodeInfo dNode) ->
-      dyn_ $ do
-        ni <- dNode
-        let
-          w :: m ()
-          w =
-            case ni of
-              BindingInfo _ b -> dynText $ fromString <$> b
-              HoleInfo _ -> text "_"
-              VarInfo _ b _ -> dynText $ fromString <$> b
-              AppInfo _ b c _ -> do
-                nodeInfoWidget graph b
-                text " "
-                nodeInfoWidget graph c
-              LamInfo _ b c _ -> do
-                text "\\"
-                nodeInfoWidget graph b
-                text " -> "
-                nodeInfoWidget graph c
-        pure w
+    Nothing -> do
+      text "NOT FOUND"
+      pure mempty
+    Just (DynamicNodeInfo dNode) -> do
+      dDeco <- do
+        eDecos <- asks _re_decos
+        foldDyn
+          (($) . appEndo)
+          emptyDeco
+          (select eDecos (Const2 $ SomeID i))
+
+      let
+        dStyling =
+          (\(Deco w ii d) ->
+              let
+                bg =
+                  if w
+                  then "background-color: red;"
+                  else
+                    if ii
+                    then "background-color: grey;"
+                    else mempty
+                border = if d then "border: 1px dotted black;" else mempty
+              in
+                "style" =: (bg <> border)) <$>
+          dDeco
+
+      (theSpan, eDecos) <-
+        elDynAttr' "span" dStyling . dyn $ do
+          ni <- dNode
+          let
+            w :: m (Event t (MonoidalMap SomeID (Endo Deco)))
+            w =
+              case ni of
+                BindingInfo _ b -> do
+                  dynText $ fromString <$> b
+                  pure mempty
+                HoleInfo _ -> do
+                  text "_"
+                  pure mempty
+                VarInfo _ b _ -> do
+                  dynText $ fromString <$> b
+                  pure mempty
+                AppInfo _ b c _ -> do
+                  m1 <- nodeInfoWidget graph b
+                  text " "
+                  m2 <- nodeInfoWidget graph c
+                  pure $ m1 <> m2
+                LamInfo _ b c _ -> do
+                  text "\\"
+                  m1 <- nodeInfoWidget graph b
+                  text " -> "
+                  m2 <- nodeInfoWidget graph c
+                  pure $ m1 <> m2
+          pure w
+
+      let eEnter :: Event t () = domEvent Mouseenter theSpan
+      let eLeave :: Event t () = domEvent Mouseleave theSpan
+
+      let
+        ev =
+          MonoidalMap . Map.singleton (SomeID i) <$>
+          fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]
+      (ev <>) <$> switchHold never eDecos
 
 renderExpr ::
   forall t m a.
@@ -632,7 +667,7 @@ renderExpr ::
 renderExpr root nodes =
   case DMap.lookup root nodes of
     Nothing -> do
-      text $ fromString (show root) <> "Not found"
+      text $ fromString (show root) <> "NOT FOUND"
       pure (error "missing node info", mempty)
     Just ni -> do
       eDecos <- asks _re_decos
@@ -858,7 +893,7 @@ main =
             eDeleteNode
           , _re_decos =
             fanMap $
-            mergeMap (getMonoidalMap $ _ri_decos ri) <>
+            coerceEvent (_ri_decos ri) <>
             eCursorDeco
           }
       (_, ri) <- flip runReaderT re $ renderExpr eid enodes
