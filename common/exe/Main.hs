@@ -131,6 +131,26 @@ data RenderEnv t
   , _re_decos :: EventSelector t (Const2 SomeID (Endo Deco))
   }
 
+getSupport ::
+  Reflex t =>
+  DMap ID (DynamicNodeInfo t) ->
+  NodeInfo f Binding ->
+  Dynamic t (Set (ID Expr))
+getSupport liveGraph (BindingInfo ctx _) =
+  case _ctxParent ctx of
+    Nothing -> pure mempty
+    Just (SomeID par) ->
+      case DMap.lookup par liveGraph of
+        Nothing -> pure mempty
+        Just (DynamicNodeInfo dNode) -> do
+          res <- dNode
+          case res of
+            LamInfo _ _ bdy _ -> do
+              case DMap.lookup bdy liveGraph of
+                Nothing -> pure mempty
+                Just (DynamicNodeInfo res') -> res' >>= freeVars
+            _ -> error "binding not attached to lambda"
+
 renderBindingInfo ::
   forall t m.
   ( DomBuilder t m, MonadHold t m, MonadFix m
@@ -145,21 +165,7 @@ renderBindingInfo ::
   m (DynamicNodeInfo t Binding, RenderInfo t)
 renderBindingInfo root nodes ctx a = do
   liveGraph <- asks _re_liveGraph
-  let
-    support :: Dynamic t (Set (ID Expr)) =
-      case _ctxParent ctx of
-        Nothing -> pure mempty
-        Just (SomeID par) ->
-          case DMap.lookup par liveGraph of
-            Nothing -> pure mempty
-            Just (DynamicNodeInfo dNode) -> do
-              res <- dNode
-              case res of
-                LamInfo _ _ bdy _ -> do
-                  case DMap.lookup bdy liveGraph of
-                    Nothing -> pure mempty
-                    Just (DynamicNodeInfo res') -> res' >>= freeVars
-                _ -> error "binding not attached to lambda"
+  let support = getSupport liveGraph $ BindingInfo ctx (pure a)
 
   editInfo <- asks _re_editInfo
   let
@@ -218,18 +224,18 @@ renderBindingInfo root nodes ctx a = do
         foldMap
           (\b ->
            fold
-             [ MonoidalMap.singleton (SomeID b) (Endo info) <$ eEnter
-             , MonoidalMap.singleton (SomeID b) (Endo uninfo) <$ eLeave
-             ])
+           [ MonoidalMap.singleton (SomeID b) (Endo info) <$ eEnter
+           , MonoidalMap.singleton (SomeID b) (Endo uninfo) <$ eLeave
+           ])
           bounds
       , _ri_changes =
         MonoidalMap $
         Map.singleton
           (SomeID root)
           (merge . DMap.fromList $
-            [ UpdateBindingK :=> eUpdate
-            , CommitBindingK :=> eCommit
-            ])
+           [ UpdateBindingK :=> eUpdate
+           , CommitBindingK :=> eCommit
+           ])
       }
 
   pure (ni', ri)
@@ -667,7 +673,7 @@ renderExpr ::
 renderExpr root nodes =
   case DMap.lookup root nodes of
     Nothing -> do
-      text $ fromString (show root) <> "NOT FOUND"
+      text $ fromString (show root) <> " NOT FOUND"
       pure (error "missing node info", mempty)
     Just ni -> do
       eDecos <- asks _re_decos
