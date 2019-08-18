@@ -10,8 +10,6 @@
 {-# language TemplateHaskell #-}
 module Main where
 
-import Editor
-
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Reader (MonadReader, runReaderT, asks, local)
 import Control.Monad.Trans (lift)
@@ -39,6 +37,57 @@ import qualified Data.Dependent.Map as DMap
 import qualified Data.Map as Map
 import qualified Data.Map.Monoidal as MonoidalMap
 import qualified Data.Text as Text
+
+import Editor
+  (Binding(..), Expr(..), Context(..), ID(..), SomeID(..), unbuild)
+import qualified Editor as Static (NodeInfo(..), context, parent)
+
+data NodeInfo t m a where
+  BindingInfo ::
+    Context (Dynamic t) ->
+    Dynamic t String ->
+    m a ->
+    NodeInfo t m Binding
+
+  VarInfo ::
+    Context (Dynamic t) ->
+    Dynamic t String ->
+    Dynamic t (Set (ID Expr)) ->
+    m a ->
+    NodeInfo t m Expr
+
+  HoleInfo ::
+    Context (Dynamic t) ->
+    m a ->
+    NodeInfo t m Expr
+
+  AppInfo ::
+    Context (Dynamic t) ->
+    ID Expr ->
+    ID Expr ->
+    Dynamic t (Set (ID Expr)) ->
+    m a ->
+    NodeInfo t m Expr
+
+  LamInfo ::
+    Context (Dynamic t) ->
+    ID Binding ->
+    ID Expr ->
+    Dynamic t (Set (ID Expr)) ->
+    m a ->
+    NodeInfo t m Expr
+
+context :: NodeInfo t m a -> Context (Dynamic t)
+context ni =
+  case ni of
+    BindingInfo c _ _ -> c
+    HoleInfo c _ -> c
+    VarInfo c _ _ _ -> c
+    AppInfo c _ _ _ _ -> c
+    LamInfo c _ _ _ _ -> c
+
+parent :: NodeInfo t m a -> Maybe SomeID
+parent = _ctxParent . context
 
 data Deco
   = Deco
@@ -98,33 +147,33 @@ data NodeEditInfo t a where
     Event t Bool -> -- is this edit causing it to be captured
     NodeEditInfo t Expr
 
-newtype DynamicNodeInfo t a
+newtype DynamicNodeInfo t m a
   = DynamicNodeInfo
   { unDynamicNodeInfo ::
-      Dynamic t (NodeInfo (Dynamic t) a)
+      Dynamic t (NodeInfo t m a)
   }
 
-data RenderInfo t
+data RenderInfo t m
   = RenderInfo
-  { _ri_liveGraph :: DMap ID (DynamicNodeInfo t)
+  { _ri_liveGraph :: DMap ID (DynamicNodeInfo t m)
   , _ri_editInfo :: DMap ID (NodeEditInfo t)
   , _ri_eAction :: Event t [Action]
   , _ri_decos :: Event t (MonoidalMap SomeID (Endo Deco))
   , _ri_changes :: MonoidalMap SomeID (Event t (DMap ChangeK Identity))
   }
 
-instance Reflex t => Semigroup (RenderInfo t) where
+instance Reflex t => Semigroup (RenderInfo t m) where
   RenderInfo a b c d e <> RenderInfo a' b' c' d' e' =
     RenderInfo (a <> a') (b <> b') (c <> c') (d <> d') (e <> e')
-instance Reflex t => Monoid (RenderInfo t) where
+instance Reflex t => Monoid (RenderInfo t m) where
   mempty = RenderInfo mempty mempty mempty mempty mempty
 
-data RenderEnv t
+data RenderEnv t m
   = RenderEnv
   { _re_eEnter :: Event t ()
   , _re_eLeave :: Event t ()
   , _re_eOpenMenu :: Event t (Int, Int)
-  , _re_liveGraph :: DMap ID (DynamicNodeInfo t)
+  , _re_liveGraph :: DMap ID (DynamicNodeInfo t m)
   , _re_editInfo :: DMap ID (NodeEditInfo t)
   , _re_localScope :: Dynamic t (Map Binding (ID Binding))
   , _re_changes :: EventSelector t ChangeIdK
@@ -133,8 +182,8 @@ data RenderEnv t
 
 getSupport ::
   Reflex t =>
-  DMap ID (DynamicNodeInfo t) ->
-  NodeInfo f Binding ->
+  DMap ID (DynamicNodeInfo t m) ->
+  NodeInfo t m Binding ->
   Dynamic t (Set (ID Expr))
 getSupport liveGraph (BindingInfo ctx _) =
   case _ctxParent ctx of
@@ -156,13 +205,13 @@ renderBindingInfo ::
   ( DomBuilder t m, MonadHold t m, MonadFix m
   , PostBuild t m
   , DomBuilderSpace m ~ GhcjsDomSpace
-  , MonadReader (RenderEnv t) m
+  , MonadReader (RenderEnv t m) m
   ) =>
   ID Binding {- ^ node id -} ->
-  DMap ID (NodeInfo Identity) -> -- static graph
+  DMap ID (Static.NodeInfo Identity) -> -- static graph
   Context Identity -> -- node context
   String -> -- node value
-  m (DynamicNodeInfo t Binding, RenderInfo t)
+  m (NodeInfo t m Binding, RenderInfo t m)
 renderBindingInfo root nodes ctx a = do
   liveGraph <- asks _re_liveGraph
   let support = getSupport liveGraph $ BindingInfo ctx (pure a)
@@ -207,11 +256,11 @@ renderBindingInfo root nodes ctx a = do
   dScope <- asks _re_localScope
   let
     Identity bounds = getBounds nodes root
-    ni' = DynamicNodeInfo $ pure $ BindingInfo (ctx { _ctxLocalScope = dScope }) dContent
+    ni' = BindingInfo (ctx { _ctxLocalScope = dScope }) dContent
 
     ri =
       RenderInfo
-      { _ri_liveGraph = DMap.singleton root ni'
+      { _ri_liveGraph = mempty
       , _ri_editInfo = mempty
       , _ri_eAction =
         (\(x, y) -> [OpenMenu (SomeID root) x y [Rename]]) <$>
@@ -244,14 +293,14 @@ renderVarInfo ::
   forall t m.
   ( DomBuilder t m, MonadHold t m, MonadFix m
   , PostBuild t m
-  , MonadReader (RenderEnv t) m
+  , MonadReader (RenderEnv t m) m
   ) =>
   ID Expr ->
-  DMap ID (NodeInfo Identity) -> -- static graph
+  DMap ID (Static.NodeInfo Identity) -> -- static graph
   Context Identity -> -- node context
   String -> -- node value
   Set (ID Expr) -> -- fre vars
-  m (DynamicNodeInfo t Expr, RenderInfo t)
+  m (NodeInfo t m Expr, RenderInfo t m)
 renderVarInfo root nodes ctx a vars = do
   let binding :: Maybe (ID Binding) = getBinding nodes root
 
@@ -263,7 +312,7 @@ renderVarInfo root nodes ctx a vars = do
         pure $ do
           res <- dNode
           case res of
-            VarInfo c _ _ -> _ctxLocalScope c
+            VarInfo c _ _ _ -> _ctxLocalScope c
             _ -> error "impossible - node is a var"
 
   eChanges <- asks _re_changes
@@ -292,10 +341,10 @@ renderVarInfo root nodes ctx a vars = do
 
   dScope <- asks _re_localScope
   let
-    ni' = DynamicNodeInfo $ pure $ VarInfo (ctx { _ctxLocalScope = dScope }) dContent (pure vars)
+    ni' = VarInfo (ctx { _ctxLocalScope = dScope }) dContent (pure vars) _
     ri =
       RenderInfo
-      { _ri_liveGraph = DMap.singleton root ni'
+      { _ri_liveGraph = mempty
       , _ri_editInfo = DMap.singleton root $ VarEditInfo eCaptured
       , _ri_eAction = never
       , _ri_decos =
@@ -318,20 +367,20 @@ renderVarInfo root nodes ctx a vars = do
   pure (ni', ri)
 
 renderHoleInfo ::
-  (DomBuilder t m, MonadReader (RenderEnv t) m) =>
+  (DomBuilder t m, MonadReader (RenderEnv t m) m) =>
   ID Expr ->
   Context Identity ->
-  m (DynamicNodeInfo t Expr, RenderInfo t)
-renderHoleInfo root ctx = do
+  m (NodeInfo t m Expr, RenderInfo t m)
+renderHoleInfo _ ctx = do
   text "_"
 
   dScope <- asks _re_localScope
-  let ni' = DynamicNodeInfo $ pure $ HoleInfo (ctx { _ctxLocalScope = dScope })
+  let ni' = HoleInfo (ctx { _ctxLocalScope = dScope }) _
 
   let
     ri =
       RenderInfo
-      { _ri_liveGraph = DMap.singleton root ni'
+      { _ri_liveGraph = mempty
       , _ri_editInfo = mempty
       , _ri_eAction = never
       , _ri_decos = mempty
@@ -344,26 +393,24 @@ renderAppInfo ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, MonadJSM m
   , PostBuild t m, TriggerEvent t m
   , DomBuilderSpace m ~ GhcjsDomSpace
-  , MonadReader (RenderEnv t) m
+  , MonadReader (RenderEnv t m) m
   ) =>
   ID Expr ->
-  DMap ID (NodeInfo Identity) ->
+  DMap ID (Static.NodeInfo Identity) ->
   Context Identity ->
   ID Expr ->
   ID Expr ->
   Set (ID Expr) ->
-  m (DynamicNodeInfo t Expr, RenderInfo t)
-renderAppInfo root nodes ctx a b vars = do
+  m (NodeInfo t m Expr, RenderInfo t m)
+renderAppInfo _ nodes ctx a b vars = do
   (_, ri1) <- renderExpr a nodes
   text " "
   (_, ri2) <- renderExpr b nodes
 
   dScope <- asks _re_localScope
-  let ni' = DynamicNodeInfo $ pure $ AppInfo (ctx { _ctxLocalScope = dScope }) a b (pure vars)
+  let ni' = AppInfo (ctx { _ctxLocalScope = dScope }) a b (pure vars) _
 
-  let
-    ri3 = ri1 <> ri2
-    ri' = ri3 { _ri_liveGraph = DMap.insert root ni' (_ri_liveGraph ri3) }
+  let ri' = ri1 <> ri2
 
   pure (ni', ri')
 
@@ -371,19 +418,18 @@ renderLamInfo ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, MonadJSM m
   , PostBuild t m, TriggerEvent t m
   , DomBuilderSpace m ~ GhcjsDomSpace
-  , MonadReader (RenderEnv t) m
+  , MonadReader (RenderEnv t m) m
   ) =>
   ID Expr ->
-  DMap ID (NodeInfo Identity) ->
+  DMap ID (Static.NodeInfo Identity) ->
   Context Identity ->
   ID Binding ->
   ID Expr ->
   Set (ID Expr) ->
-  m (DynamicNodeInfo t Expr, RenderInfo t)
-renderLamInfo root nodes ctx a b vars = do
+  m (NodeInfo t m Expr, RenderInfo t m)
+renderLamInfo _ nodes ctx a b vars = do
   text "\\"
-  (dNode, ri1) <- renderExpr a nodes
-  let dBindingVal = unDynamicNodeInfo dNode >>= \(BindingInfo _ d) -> d
+  (BindingInfo _ dBindingVal _, ri1) <- renderExpr a nodes
   text " -> "
   (_, ri2) <-
     local
@@ -395,20 +441,17 @@ renderLamInfo root nodes ctx a b vars = do
       (renderExpr b nodes)
 
   dScope <- asks _re_localScope
-  let
-    ni' = DynamicNodeInfo $ pure $ LamInfo (ctx { _ctxLocalScope = dScope }) a b (pure vars)
+  let ni' = LamInfo (ctx { _ctxLocalScope = dScope }) a b (pure vars) _
 
-  let
-    ri3 = ri1 <> ri2
-    ri' = ri3 { _ri_liveGraph = DMap.insert root ni' (_ri_liveGraph ri3) }
+  let ri' = ri1 <> ri2
 
   pure (ni', ri')
 
 getSiblingRight ::
   Reflex t =>
   ID a ->
-  NodeInfo f a ->
-  DMap ID (DynamicNodeInfo t) ->
+  NodeInfo t m a ->
+  DMap ID (DynamicNodeInfo t m) ->
   Dynamic t (Maybe SomeID)
 getSiblingRight root nnni graph =
   case parent nnni of
@@ -422,14 +465,14 @@ getSiblingRight root nnni graph =
             BindingInfo{} -> error "impossible - binding is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
             VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
+            AppInfo _ a b _ _ ->
               if SomeID a == SomeID root
               then pure . Just $ SomeID b
               else
                 if SomeID b == SomeID root
                 then pure Nothing
                 else error "bad child ID"
-            LamInfo _ a b _ ->
+            LamInfo _ a b _ _ ->
               if SomeID a == SomeID root
               then pure . Just $ SomeID b
               else
@@ -440,8 +483,8 @@ getSiblingRight root nnni graph =
 getSiblingLeft ::
   Reflex t =>
   ID a ->
-  NodeInfo f a ->
-  DMap ID (DynamicNodeInfo t) ->
+  NodeInfo t m a ->
+  DMap ID (DynamicNodeInfo t m) ->
   Dynamic t (Maybe SomeID)
 getSiblingLeft root nnni graph = do
   case parent nnni of
@@ -455,14 +498,14 @@ getSiblingLeft root nnni graph = do
             BindingInfo{} -> error "impossible - binding is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
             VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
+            AppInfo _ a b _ _ ->
               if SomeID b == SomeID root
               then pure . Just $ SomeID a
               else
                 if SomeID a == SomeID root
                 then pure Nothing
                 else error "bad child ID"
-            LamInfo _ a b _ ->
+            LamInfo _ a b _ _ ->
               if SomeID b == SomeID root
               then pure . Just $ SomeID a
               else
@@ -473,7 +516,7 @@ getSiblingLeft root nnni graph = do
 rightmostLeaf ::
   Reflex t =>
   ID a ->
-  DMap ID (DynamicNodeInfo t) ->
+  DMap ID (DynamicNodeInfo t m) ->
   Dynamic t (Maybe SomeID)
 rightmostLeaf i graph = do
   case DMap.lookup i graph of
@@ -484,14 +527,14 @@ rightmostLeaf i graph = do
         BindingInfo{} -> pure . Just $ SomeID i
         HoleInfo{} -> pure . Just $ SomeID i
         VarInfo{} -> pure . Just $ SomeID i
-        AppInfo _ _ a _ -> rightmostLeaf a graph
-        LamInfo _ _ a _ -> rightmostLeaf a graph
+        AppInfo _ _ a _ _ -> rightmostLeaf a graph
+        LamInfo _ _ a _ _ -> rightmostLeaf a graph
 
 getLeafLeft ::
   Reflex t =>
   ID a ->
-  NodeInfo f a ->
-  DMap ID (DynamicNodeInfo t) ->
+  NodeInfo t m a ->
+  DMap ID (DynamicNodeInfo t m) ->
   Dynamic t (Maybe SomeID)
 getLeafLeft from nnni graph =
   case parent nnni of
@@ -505,14 +548,14 @@ getLeafLeft from nnni graph =
             BindingInfo{} -> error "impossible - binding is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
             VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
+            AppInfo _ a b _ _ ->
               if SomeID from == SomeID b
               then rightmostLeaf a graph
               else
                 if SomeID from == SomeID a
                 then getLeafLeft p res graph
                 else error "bad child ID"
-            LamInfo _ a b _ ->
+            LamInfo _ a b _ _ ->
               if SomeID from == SomeID b
               then rightmostLeaf a graph
               else
@@ -523,7 +566,7 @@ getLeafLeft from nnni graph =
 leftmostLeaf ::
   Reflex t =>
   ID a ->
-  DMap ID (DynamicNodeInfo t) ->
+  DMap ID (DynamicNodeInfo t m) ->
   Dynamic t (Maybe SomeID)
 leftmostLeaf i graph = do
   case DMap.lookup i graph of
@@ -534,14 +577,14 @@ leftmostLeaf i graph = do
         BindingInfo{} -> pure . Just $ SomeID i
         HoleInfo{} -> pure . Just $ SomeID i
         VarInfo{} -> pure . Just $ SomeID i
-        AppInfo _ a _ _ -> leftmostLeaf a graph
-        LamInfo _ a _ _ -> leftmostLeaf a graph
+        AppInfo _ a _ _ _ -> leftmostLeaf a graph
+        LamInfo _ a _ _ _ -> leftmostLeaf a graph
 
 getLeafRight ::
   Reflex t =>
   ID a ->
-  NodeInfo f a ->
-  DMap ID (DynamicNodeInfo t) ->
+  NodeInfo t m a ->
+  DMap ID (DynamicNodeInfo t m) ->
   Dynamic t (Maybe SomeID)
 getLeafRight from nnni graph =
   case parent nnni of
@@ -555,14 +598,14 @@ getLeafRight from nnni graph =
             BindingInfo{} -> error "impossible - binding is not a parent"
             HoleInfo{} -> error "impossible - hole is not a parent"
             VarInfo{} -> error "impossible - var is not a parent"
-            AppInfo _ a b _ ->
+            AppInfo _ a b _ _ ->
               if SomeID from == SomeID a
               then leftmostLeaf b graph
               else
                 if SomeID from == SomeID b
                 then getLeafRight p res graph
                 else error "bad child ID"
-            LamInfo _ a b _ ->
+            LamInfo _ a b _ _ ->
               if SomeID from == SomeID a
               then leftmostLeaf b graph
               else
@@ -570,93 +613,23 @@ getLeafRight from nnni graph =
                 then getLeafRight p res graph
                 else error "bad child ID"
 
-getParent :: NodeInfo f a -> Maybe SomeID
-getParent nnni = parent nnni
+getParent :: NodeInfo t m a -> Maybe SomeID
+getParent ni =
+  case ni of
+    BindingInfo c _ _ -> _ctxParent c
+    HoleInfo c _ -> _ctxParent c
+    VarInfo c _ _ _ -> _ctxParent c
+    AppInfo c _ _ _ _ -> _ctxParent c
+    LamInfo c _ _ _ _ -> _ctxParent c
 
-getChild :: NodeInfo f a -> Maybe SomeID
+getChild :: NodeInfo t m a -> Maybe SomeID
 getChild nnni =
   case nnni of
     BindingInfo{} -> Nothing
     HoleInfo{} -> Nothing
     VarInfo{} -> Nothing
-    AppInfo _ a _ _ -> Just $ SomeID a
-    LamInfo _ a _ _ -> Just $ SomeID a
-
-nodeInfoWidget ::
-  forall t m a.
-  ( DomBuilder t m, MonadHold t m, MonadFix m
-  , PostBuild t m
-  , MonadReader (RenderEnv t) m
-  ) =>
-  DMap ID (DynamicNodeInfo t) ->
-  ID a ->
-  m (Event t (MonoidalMap SomeID (Endo Deco)))
-nodeInfoWidget graph i =
-  case DMap.lookup i graph of
-    Nothing -> do
-      text "NOT FOUND"
-      pure mempty
-    Just (DynamicNodeInfo dNode) -> do
-      dDeco <- do
-        eDecos <- asks _re_decos
-        foldDyn
-          (($) . appEndo)
-          emptyDeco
-          (select eDecos (Const2 $ SomeID i))
-
-      let
-        dStyling =
-          (\(Deco w ii d) ->
-              let
-                bg =
-                  if w
-                  then "background-color: red;"
-                  else
-                    if ii
-                    then "background-color: grey;"
-                    else mempty
-                border = if d then "border: 1px dotted black;" else mempty
-              in
-                "style" =: (bg <> border)) <$>
-          dDeco
-
-      (theSpan, eDecos) <-
-        elDynAttr' "span" dStyling . dyn $ do
-          ni <- dNode
-          let
-            w :: m (Event t (MonoidalMap SomeID (Endo Deco)))
-            w =
-              case ni of
-                BindingInfo _ b -> do
-                  dynText $ fromString <$> b
-                  pure mempty
-                HoleInfo _ -> do
-                  text "_"
-                  pure mempty
-                VarInfo _ b _ -> do
-                  dynText $ fromString <$> b
-                  pure mempty
-                AppInfo _ b c _ -> do
-                  m1 <- nodeInfoWidget graph b
-                  text " "
-                  m2 <- nodeInfoWidget graph c
-                  pure $ m1 <> m2
-                LamInfo _ b c _ -> do
-                  text "\\"
-                  m1 <- nodeInfoWidget graph b
-                  text " -> "
-                  m2 <- nodeInfoWidget graph c
-                  pure $ m1 <> m2
-          pure w
-
-      let eEnter :: Event t () = domEvent Mouseenter theSpan
-      let eLeave :: Event t () = domEvent Mouseleave theSpan
-
-      let
-        ev =
-          MonoidalMap . Map.singleton (SomeID i) <$>
-          fold [Endo info <$ eEnter, Endo uninfo <$ eLeave]
-      (ev <>) <$> switchHold never eDecos
+    AppInfo _ a _ _ _ -> Just $ SomeID a
+    LamInfo _ a _ _ _ -> Just $ SomeID a
 
 renderExpr ::
   forall t m a.
@@ -665,11 +638,11 @@ renderExpr ::
   , MonadJSM m
   , DomBuilderSpace m ~ GhcjsDomSpace
   , MonadFix m
-  , MonadReader (RenderEnv t) m
+  , MonadReader (RenderEnv t m) m
   ) =>
   ID a ->
-  DMap ID (NodeInfo Identity) ->
-  m (DynamicNodeInfo t a, RenderInfo t)
+  DMap ID (Static.NodeInfo Identity) ->
+  m (NodeInfo t m a, RenderInfo t m)
 renderExpr root nodes =
   case DMap.lookup root nodes of
     Nothing -> do
@@ -707,26 +680,43 @@ renderExpr root nodes =
                  "style" =: (bg <> border)) <$>
             dDeco
 
-        (theSpan, (nni, ri')) <-
-          elDynAttr' "span" (("id" =: fromString (show root) <>) <$> dStyling) .
+        (nni, dni, ri') <-
           local
             (\re ->
              re
              { _re_eEnter = eEnter
              , _re_eLeave = eLeave
              , _re_eOpenMenu = eOpenMenu
-             }) $
-          case ni of
-            BindingInfo ctx (Identity a) ->
-              renderBindingInfo root nodes ctx a
-            HoleInfo ctx ->
-              renderHoleInfo root ctx
-            VarInfo ctx (Identity val) (Identity vars) ->
-              renderVarInfo root nodes ctx val vars
-            AppInfo ctx a b (Identity vars) ->
-              renderAppInfo root nodes ctx a b vars
-            LamInfo ctx a b (Identity vars) ->
-              renderLamInfo root nodes ctx a b vars
+             }) $ do
+            (nnni, ri'') <-
+              case ni of
+                Static.BindingInfo ctx (Identity a) ->
+                  renderBindingInfo root nodes ctx a
+                Static.HoleInfo ctx ->
+                  renderHoleInfo root ctx
+                Static.VarInfo ctx (Identity val) (Identity vars) ->
+                  renderVarInfo root nodes ctx val vars
+                Static.AppInfo ctx a b (Identity vars) ->
+                  renderAppInfo root nodes ctx a b vars
+                Static.LamInfo ctx a b (Identity vars) ->
+                  renderLamInfo root nodes ctx a b vars
+            changes <- asks _re_changes
+            let eDelete = select changes $ ChangeIdK (SomeID root) DeleteNodeK
+            rec
+              dni <-
+                case root of
+                  ID_Expr{} ->
+                    holdDyn nnni $ (\old -> HoleInfo (context old)) <$> current dni <@ eDelete
+                  ID_Binding{} ->
+                    pure $ constDyn nnni
+            pure
+              ( nnni
+              , dni
+              , ri'' { _ri_liveGraph = DMap.insert root (DynamicNodeInfo dni) (_ri_liveGraph ri'') }
+              )
+        (theSpan, _) <-
+          elDynAttr' "span" (("id" =: fromString (show root) <>) <$> dStyling) . dyn_ $
+          _ <$> dni
       pure (nni, ri')
 
 data Menu

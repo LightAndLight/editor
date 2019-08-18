@@ -1,9 +1,12 @@
+{-# language FlexibleInstances #-}
 {-# language GADTs, StandaloneDeriving #-}
 {-# language LambdaCase #-}
 {-# language MultiParamTypeClasses #-}
 {-# language TemplateHaskell #-}
+{-# language TypeFamilies #-}
 module Editor where
 
+import Data.Constraint.Extras.TH (deriveArgDict)
 import Data.Dependent.Map (DMap)
 import Data.Functor.Identity (Identity(..))
 -- import Data.Dependent.Sum (ShowTag(..))
@@ -69,6 +72,9 @@ data Context f
   , _ctxLocalScope :: f (Map Binding (ID Binding))
   }
 
+emptyContext :: Applicative f => Context f
+emptyContext = Context Nothing (pure mempty)
+
 data NodeInfo f a where
   BindingInfo ::
     Context f ->
@@ -98,6 +104,9 @@ data NodeInfo f a where
     ID Expr ->
     f (Set (ID Expr)) ->
     NodeInfo f Expr
+
+data SomeNodeInfo f where
+  SomeNodeInfo :: NodeInfo f a -> SomeNodeInfo f
 {-
 deriving instance Eq (NodeInfo a)
 deriving instance Ord (NodeInfo a)
@@ -227,3 +236,5 @@ getBinding m i =
         (Binding $ runIdentity val)
         (runIdentity $ _ctxLocalScope ctx)
     _ -> Nothing
+
+deriveArgDict ''ID
