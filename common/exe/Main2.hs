@@ -10,7 +10,8 @@ module Main2 where
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
-import Data.Dependent.Map (DMap)
+import Data.Dependent.Map (DMap, GCompare)
+import Data.Functor.Compose (Compose(..))
 import Data.Functor.Identity (Identity(..))
 import Data.Map.Monoidal (MonoidalMap)
 import Data.Monoid (Endo(..))
@@ -21,6 +22,7 @@ import JSDOM.EventM (event, on)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex
 import Reflex.Dom
+import Data.Functor.Misc
 
 import qualified Data.Dependent.Map as DMap
 import qualified Data.Map.Monoidal as MonoidalMap
@@ -32,6 +34,59 @@ import Editor
   , unbuild
   , parent
   )
+
+dmapDyn ::
+  forall t m k f.
+  (GCompare k, Reflex t, MonadHold t m, MonadFix m) =>
+  Dynamic t (DMap k f) ->
+  m (Dynamic t (DMap k (Compose (Dynamic t) f)))
+dmapDyn dMap = do
+  rec
+    d <-
+      buildDynamic
+        (sample (current dMap) >>=
+         holdKeys mempty . PatchDMap .
+         DMap.mapWithKey (\_ fv -> ComposeMaybe $ Just fv))
+        (push
+           (\new -> do
+              old <- sample $ current dMap
+              let
+                diff =
+                  DMap.foldrWithKey
+                    (\k _ ->
+                       if DMap.member k new
+                       then id
+                       else DMap.insert k $ ComposeMaybe Nothing)
+                    (DMap.foldrWithKey
+                       (\k fv ->
+                          if DMap.member k old
+                          then id
+                          else DMap.insert k . ComposeMaybe $ Just fv)
+                       mempty
+                       new)
+                    old
+              if DMap.null diff
+                then pure Nothing
+                else do
+                  old' <- sample $ current d
+                  Just <$> holdKeys old' (PatchDMap diff))
+           (updated dMap))
+  pure d
+  where
+    holdKeys ::
+      DMap k (Compose (Dynamic t) f) ->
+      PatchDMap k f ->
+      PushM t (DMap k (Compose (Dynamic t) f))
+    holdKeys old (PatchDMap diff) =
+      DMap.foldrWithKey
+        (\k (ComposeMaybe v) rest ->
+           case v of
+             Just vv -> do
+               d <- holdDyn vv . coerceEvent =<< takeWhileJustE (DMap.lookup k) (updated dMap)
+               DMap.insert k (Compose d) <$> rest
+             Nothing -> DMap.delete k <$> rest)
+        (pure old)
+        diff
 
 data Deco
   = Deco
@@ -67,16 +122,18 @@ decoStyle d = bg <> border
       | _decoCursor d = "border: 1px dotted black;"
       | otherwise = mempty
 
-type LiveGraph t = DMap ID (NodeInfo (Dynamic t))
+type LiveGraphOut t = DMap ID (NodeInfo (Dynamic t))
+type LiveGraphIn t = DMap ID (Compose (Dynamic t) (NodeInfo (Dynamic t)))
 type Graph = DMap ID (NodeInfo Identity)
 
-isLeaf :: Reflex t => Dynamic t (LiveGraph t) -> ID a -> Dynamic t Bool
+isLeaf :: Reflex t => Dynamic t (LiveGraphIn t) -> ID a -> Dynamic t Bool
 isLeaf dGraph i = do
   ws <- dGraph
-  pure $
-    case DMap.lookup i ws of
-      Nothing -> False
-      Just node ->
+  case DMap.lookup i ws of
+    Nothing -> pure False
+    Just (Compose dNode) -> do
+      node <- dNode
+      pure $
         case node of
           BindingInfo{} -> True
           VarInfo{} -> True
@@ -127,9 +184,9 @@ mkLiveGraph ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m
   , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
   ) =>
-  Event t (Endo (LiveGraph t)) ->
+  Event t (Endo (LiveGraphOut t)) ->
   Graph ->
-  m (Dynamic t (LiveGraph t))
+  m (Dynamic t (LiveGraphOut t))
 mkLiveGraph eGraphUpdate g = do
   g' <- DMap.traverseWithKey mkDynamicNode g
   foldDyn (($) . appEndo) g' eGraphUpdate
@@ -139,7 +196,7 @@ renderID ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
   ) =>
-  Dynamic t (LiveGraph t) ->
+  Dynamic t (LiveGraphIn t) ->
   Event t (MonoidalMap SomeID (Endo Deco)) ->
   ID a ->
   m ()
@@ -160,7 +217,9 @@ renderID dGraph eDecos i = do
       ws <- dGraph
       case DMap.lookup i ws of
         Nothing -> pure $ text "NOT FOUND"
-        Just node -> pure $ renderNode dGraph eDecos node
+        Just (Compose dNode) -> do
+          node <- dNode
+          pure $ renderNode dGraph eDecos node
   let eEnter :: Event t () = domEvent Mouseenter theSpan
   let eLeave :: Event t () = domEvent Mouseleave theSpan
   tellEvent $ MonoidalMap.singleton (SomeID i) info <$ gate bIsLeaf eEnter
@@ -170,7 +229,7 @@ renderNode ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
   ) =>
-  Dynamic t (LiveGraph t) ->
+  Dynamic t (LiveGraphIn t) ->
   Event t (MonoidalMap SomeID (Endo Deco)) ->
   NodeInfo (Dynamic t) a ->
   m ()
@@ -191,7 +250,7 @@ renderNode dGraph eDecos node = do
       text " -> "
       renderID dGraph eDecos c2
 
-deleteNode :: SomeID -> Endo (LiveGraph t)
+deleteNode :: SomeID -> Endo (LiveGraphOut t)
 deleteNode (SomeID i) =
   Endo $
   DMap.alter
@@ -204,7 +263,7 @@ deleteNode (SomeID i) =
        AppInfo ctx _ _ _ -> HoleInfo ctx)
     i
 
-appNode :: Reflex t => SomeID -> Endo (LiveGraph t)
+appNode :: Reflex t => SomeID -> Endo (LiveGraphOut t)
 appNode (SomeID i) =
   Endo $ \ws ->
   case DMap.lookup i ws of
@@ -241,12 +300,12 @@ documentKey k' = do
   fmapMaybe (\k -> guard $ k == k') <$>
     wrapDomEvent document (`on` Event.keyDown) (getKey =<< event)
 
-parentNode :: LiveGraph t -> SomeID -> Maybe SomeID
+parentNode :: LiveGraphOut t -> SomeID -> Maybe SomeID
 parentNode graph (SomeID i) = do
   node <- DMap.lookup i graph
   parent node
 
-childNode :: LiveGraph t -> SomeID -> Maybe SomeID
+childNode :: LiveGraphOut t -> SomeID -> Maybe SomeID
 childNode graph (SomeID i) = do
   node <- DMap.lookup i graph
   case node of
@@ -256,7 +315,7 @@ childNode graph (SomeID i) = do
     LamInfo _ i' _ _ -> Just $ SomeID i'
     AppInfo _ i' _ _ -> Just $ SomeID i'
 
-nextSibling :: LiveGraph t -> SomeID -> Maybe SomeID
+nextSibling :: LiveGraphOut t -> SomeID -> Maybe SomeID
 nextSibling graph (SomeID i) = do
   node <- DMap.lookup i graph
   SomeID p <- parent node
@@ -274,7 +333,7 @@ nextSibling graph (SomeID i) = do
       | SomeID b == SomeID i -> Nothing
       | otherwise -> undefined
 
-prevSibling :: LiveGraph t -> SomeID -> Maybe SomeID
+prevSibling :: LiveGraphOut t -> SomeID -> Maybe SomeID
 prevSibling graph (SomeID i) = do
   node <- DMap.lookup i graph
   SomeID p <- parent node
@@ -292,7 +351,7 @@ prevSibling graph (SomeID i) = do
       | SomeID b == SomeID i -> Just $ SomeID a
       | otherwise -> undefined
 
-nextLeaf :: forall t. LiveGraph t -> SomeID -> Maybe SomeID
+nextLeaf :: forall t. LiveGraphOut t -> SomeID -> Maybe SomeID
 nextLeaf graph = starting
   where
     starting :: SomeID -> Maybe SomeID
@@ -337,7 +396,7 @@ nextLeaf graph = starting
           | SomeID b == i -> uppity (SomeID p) ctx'
           | otherwise -> undefined
 
-prevLeaf :: forall t. LiveGraph t -> SomeID -> Maybe SomeID
+prevLeaf :: forall t. LiveGraphOut t -> SomeID -> Maybe SomeID
 prevLeaf graph = starting
   where
     starting :: SomeID -> Maybe SomeID
@@ -404,7 +463,8 @@ main =
       (dGraph, eDecos_) <-
         runEventWriterT $
           mkLiveGraph (eApp <> eDelete) g <*
-          renderID dGraph eDecos i
+          renderID dGraph' eDecos i
+      dGraph' <- dmapDyn dGraph
       dCursor <-
         holdDyn (SomeID i) . fmapMaybe id $
         mergeWith (<|>)

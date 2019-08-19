@@ -1,6 +1,7 @@
 {-# language FlexibleContexts #-}
 {-# language OverloadedStrings #-}
 {-# language RecursiveDo #-}
+{-# language ScopedTypeVariables #-}
 {-# language TypeFamilies #-}
 module Main where
 
@@ -21,6 +22,7 @@ import Reflex.Dom
 import Reflex.Network
 
 import qualified Data.Map as Map
+import qualified Data.Map.Merge.Lazy as Map
 import qualified GHCJS.DOM.GlobalEventHandlers as Event
 
 newtype ID = ID Int

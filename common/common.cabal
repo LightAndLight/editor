@@ -48,5 +48,5 @@ executable frontend
                      , text >= 1.2
   ghc-options:         -Wall -Werror
   hs-source-dirs:      exe
-  main-is:             Main3.hs
+  main-is:             Main2.hs
   default-language:    Haskell2010
