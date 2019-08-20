@@ -38,39 +38,37 @@ import Editor
 dmapDyn ::
   forall t m k f.
   (GCompare k, Reflex t, MonadHold t m, MonadFix m) =>
-  Dynamic t (DMap k f) ->
+  Incremental t (PatchDMap k f) ->
   m (Dynamic t (DMap k (Compose (Dynamic t) f)))
 dmapDyn dMap = do
   rec
     d <-
       buildDynamic
-        (sample (current dMap) >>=
+        (sample (currentIncremental dMap) >>=
          holdKeys mempty . PatchDMap .
          DMap.mapWithKey (\_ fv -> ComposeMaybe $ Just fv))
         (push
-           (\new -> do
-              old <- sample $ current dMap
-              let
-                diff =
-                  DMap.foldrWithKey
-                    (\k _ ->
-                       if DMap.member k new
-                       then id
-                       else DMap.insert k $ ComposeMaybe Nothing)
-                    (DMap.foldrWithKey
-                       (\k fv ->
-                          if DMap.member k old
-                          then id
-                          else DMap.insert k . ComposeMaybe $ Just fv)
-                       mempty
-                       new)
-                    old
-              if DMap.null diff
-                then pure Nothing
-                else do
-                  old' <- sample $ current d
-                  Just <$> holdKeys old' (PatchDMap diff))
-           (updated dMap))
+           (\(PatchDMap patch) -> do
+               old <- sample $ currentIncremental dMap
+               let
+                 diff =
+                   DMap.foldrWithKey
+                     (\k (ComposeMaybe v) ->
+                        if DMap.member k old
+                        then case v of
+                          Nothing -> DMap.insert k $ ComposeMaybe v
+                          Just{} -> id
+                        else case v of
+                          Nothing -> id
+                          Just{} -> DMap.insert k $ ComposeMaybe v)
+                     mempty
+                     patch
+               if DMap.null diff
+                 then pure Nothing
+                 else do
+                   old' <- sample $ current d
+                   Just <$> holdKeys old' (PatchDMap diff))
+           (updatedIncremental dMap))
   pure d
   where
     holdKeys ::
@@ -82,7 +80,11 @@ dmapDyn dMap = do
         (\k (ComposeMaybe v) rest ->
            case v of
              Just vv -> do
-               d <- holdDyn vv . coerceEvent =<< takeWhileJustE (DMap.lookup k) (updated dMap)
+               d <-
+                 holdDyn vv . coerceEvent =<<
+                 takeWhileJustE
+                   getComposeMaybe
+                   (fmapMaybe (DMap.lookup k . unPatchDMap) $ updatedIncremental dMap)
                DMap.insert k (Compose d) <$> rest
              Nothing -> DMap.delete k <$> rest)
         (pure old)
@@ -122,6 +124,7 @@ decoStyle d = bg <> border
       | _decoCursor d = "border: 1px dotted black;"
       | otherwise = mempty
 
+type UpdateLiveGraphOut t = PatchDMap ID (NodeInfo (Dynamic t))
 type LiveGraphOut t = DMap ID (NodeInfo (Dynamic t))
 type LiveGraphIn t = DMap ID (Compose (Dynamic t) (NodeInfo (Dynamic t)))
 type Graph = DMap ID (NodeInfo Identity)
@@ -184,12 +187,13 @@ mkLiveGraph ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m
   , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
   ) =>
-  Event t (Endo (LiveGraphOut t)) ->
+  Event t (UpdateLiveGraphOut t) ->
   Graph ->
-  m (Dynamic t (LiveGraphOut t))
+  m (Incremental t (UpdateLiveGraphOut t))
 mkLiveGraph eGraphUpdate g = do
   g' <- DMap.traverseWithKey mkDynamicNode g
-  foldDyn (($) . appEndo) g' eGraphUpdate
+  -- foldDyn (($) . appEndo) g' eGraphUpdate
+  pure $ unsafeBuildIncremental (pure g') eGraphUpdate
 
 renderID ::
   forall t m a.
@@ -250,40 +254,40 @@ renderNode dGraph eDecos node = do
       text " -> "
       renderID dGraph eDecos c2
 
-deleteNode :: SomeID -> Endo (LiveGraphOut t)
-deleteNode (SomeID i) =
-  Endo $
-  DMap.alter
-    (fmap $
-     \case
-       n@BindingInfo{} -> n
-       n@HoleInfo{} -> n
-       VarInfo ctx _ _ -> HoleInfo ctx
-       LamInfo ctx _ _ _ -> HoleInfo ctx
-       AppInfo ctx _ _ _ -> HoleInfo ctx)
-    i
+deleteNode :: SomeID -> LiveGraphOut t -> UpdateLiveGraphOut t
+deleteNode (SomeID i) graph =
+  case DMap.lookup i graph of
+    Nothing -> mempty
+    Just node ->
+      PatchDMap . DMap.singleton i . ComposeMaybe . Just $
+      case node of
+         n@BindingInfo{} -> n
+         n@HoleInfo{} -> n
+         VarInfo ctx _ _ -> HoleInfo ctx
+         LamInfo ctx _ _ _ -> HoleInfo ctx
+         AppInfo ctx _ _ _ -> HoleInfo ctx
 
-appNode :: Reflex t => SomeID -> Endo (LiveGraphOut t)
-appNode (SomeID i) =
-  Endo $ \ws ->
-  case DMap.lookup i ws of
-    Nothing -> ws
+appNode :: Reflex t => SomeID -> LiveGraphOut t -> UpdateLiveGraphOut t
+appNode (SomeID i) graph =
+  case DMap.lookup i graph of
+    Nothing -> mempty
     Just node ->
       case node of
         HoleInfo ctx ->
           let
-            sz = DMap.size ws
+            sz = DMap.size graph
             i1 = ID_Expr sz
             i2 = ID_Expr $ sz+1
           in
-            DMap.insert i (AppInfo ctx i1 i2 (pure mempty)) $
-            DMap.insert i1 (HoleInfo $ ctx { _ctxParent = Just (SomeID i) }) $
-            DMap.insert i2 (HoleInfo $ ctx { _ctxParent = Just (SomeID i) }) $
-            ws
-        BindingInfo{} -> ws
-        VarInfo{} -> ws
-        LamInfo{} -> ws
-        AppInfo{} -> ws
+            PatchDMap $
+            DMap.insert i (ComposeMaybe . Just $ AppInfo ctx i1 i2 (pure mempty)) $
+            DMap.insert i1 (ComposeMaybe . Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) }) $
+            DMap.insert i2 (ComposeMaybe . Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) }) $
+            mempty
+        BindingInfo{} -> mempty
+        VarInfo{} -> mempty
+        LamInfo{} -> mempty
+        AppInfo{} -> mempty
 
 headWidget :: DomBuilder t m => m ()
 headWidget = do
@@ -458,8 +462,8 @@ main =
     rec
       let
         eDecos = eDecos_ <> eCursorDeco
-        eDelete = deleteNode <$> current dCursor <@ eKeyD
-        eApp = appNode <$> current dCursor <@ eKeyA
+        eDelete = deleteNode <$> current dCursor <*> currentIncremental dGraph <@ eKeyD
+        eApp = appNode <$> current dCursor <*> currentIncremental dGraph <@ eKeyA
       (dGraph, eDecos_) <-
         runEventWriterT $
           mkLiveGraph (eApp <> eDelete) g <*
@@ -468,12 +472,12 @@ main =
       dCursor <-
         holdDyn (SomeID i) . fmapMaybe id $
         mergeWith (<|>)
-        [ nextLeaf <$> current dGraph <*> current dCursor <@ eKeyL
-        , prevLeaf <$> current dGraph <*> current dCursor <@ eKeyH
-        , parentNode <$> current dGraph <*> current dCursor <@ eKeyK
-        , childNode <$> current dGraph <*> current dCursor <@ eKeyJ
-        , nextSibling <$> current dGraph <*> current dCursor <@ eKeyLL
-        , prevSibling <$> current dGraph <*> current dCursor <@ eKeyHH
+        [ nextLeaf <$> currentIncremental dGraph <*> current dCursor <@ eKeyL
+        , prevLeaf <$> currentIncremental dGraph <*> current dCursor <@ eKeyH
+        , parentNode <$> currentIncremental dGraph <*> current dCursor <@ eKeyK
+        , childNode <$> currentIncremental dGraph <*> current dCursor <@ eKeyJ
+        , nextSibling <$> currentIncremental dGraph <*> current dCursor <@ eKeyLL
+        , prevSibling <$> currentIncremental dGraph <*> current dCursor <@ eKeyHH
         ]
       let
         eCursorDeco =
