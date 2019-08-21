@@ -32,6 +32,8 @@ import qualified Data.Map.Monoidal as MonoidalMap
 import qualified Data.Map.Merge.Lazy as Map
 import qualified Data.Text as Text
 import qualified GHCJS.DOM.GlobalEventHandlers as Event
+import qualified GHCJS.DOM.HTMLElement as Element (focus)
+import qualified GHCJS.DOM.HTMLInputElement as InputElement (select)
 
 import Editor
   ( Context(..), emptyContext, NodeInfo(..), ID(..)
@@ -197,7 +199,7 @@ nodeSort node =
 renderID ::
   forall t m a.
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
-  , DomBuilderSpace m ~ GhcjsDomSpace
+  , DomBuilderSpace m ~ GhcjsDomSpace, MonadJSM m
   , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
@@ -231,7 +233,7 @@ renderID dGraph dDecos eActions i = do
 
 renderNode ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
-  , DomBuilderSpace m ~ GhcjsDomSpace
+  , DomBuilderSpace m ~ GhcjsDomSpace, MonadJSM m
   , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
@@ -259,6 +261,9 @@ renderNode dGraph dDecos eActions i node = do
                     , _textInputConfig_setValue = never
                     , _textInputConfig_attributes = mempty
                     }
+                  -- Element.focus $ _element_raw $ _inputElement_element $ _textInput_builderElement ti
+                  Element.focus $ _inputElement_raw $ _textInput_builderElement ti
+                  InputElement.select $ _inputElement_raw $ _textInput_builderElement ti
                   pure $ current (value ti) <@ keypress Enter ti
               CommitBinding{} ->
                 Just txt)
