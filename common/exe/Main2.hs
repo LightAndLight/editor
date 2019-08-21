@@ -11,8 +11,11 @@ import Control.Applicative ((<|>))
 import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
 import Data.Dependent.Map (DMap, GCompare)
+import Data.Dependent.Sum (DSum(..))
 import Data.Functor.Identity (Identity(..))
-import Data.Map.Monoidal (MonoidalMap)
+import Data.Map (Map)
+import Data.Map.Monoidal (MonoidalMap(..))
+import Data.Maybe (fromMaybe)
 import Data.Monoid (Endo(..))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -24,7 +27,10 @@ import Reflex.Dom
 import Data.Functor.Misc
 
 import qualified Data.Dependent.Map as DMap
+import qualified Data.Map as Map
 import qualified Data.Map.Monoidal as MonoidalMap
+import qualified Data.Map.Merge.Lazy as Map
+import qualified Data.Text as Text
 import qualified GHCJS.DOM.GlobalEventHandlers as Event
 
 import Editor
@@ -122,15 +128,29 @@ mkDynamicContext ::
 mkDynamicContext (Context p (Identity sc)) =
   pure $ Context p (pure sc)
 
-mkDynamicContent ::
-  (Reflex t, Monad m) =>
+data Action a where
+  EditBinding :: Action Binding
+  CommitBinding :: String -> Action Binding
+
+mkDynamicNode ::
+  (Reflex t, MonadHold t m) =>
+  Event t (DMap ID Action) ->
+  ID a ->
   NodeInfo Identity a ->
   m (NodeInfo (Dynamic t) a)
-mkDynamicContent node =
+mkDynamicNode eActions i node =
+  let
+    eAction = fmapMaybe (DMap.lookup i) eActions
+  in
   case node of
     BindingInfo ctx (Identity val) -> do
       ctx' <- mkDynamicContext ctx
-      pure $ BindingInfo ctx' (pure val)
+      dVal <-
+        holdDyn val $
+        fmapMaybe
+          (\case; CommitBinding val' -> Just val'; _ -> Nothing)
+          eAction
+      pure $ BindingInfo ctx' dVal
     VarInfo ctx (Identity val) (Identity vars) -> do
       ctx' <- mkDynamicContext ctx
       pure $ VarInfo ctx' (pure val) (pure vars)
@@ -144,85 +164,141 @@ mkDynamicContent node =
       ctx' <- mkDynamicContext ctx
       pure $ LamInfo ctx' c1 c2 (pure vars)
 
-mkDynamicNode ::
-  forall t m a.
-  ( DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m
-  , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
-  ) =>
-  ID a ->
-  NodeInfo Identity a ->
-  m (NodeInfo (Dynamic t) a)
-mkDynamicNode _ node = mkDynamicContent node
-
 mkLiveGraph ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m
-  , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
+  , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
   ) =>
+  Event t (DMap ID Action) ->
   Event t (UpdateLiveGraph t) ->
   Graph ->
   m (Incremental t (UpdateLiveGraph t))
-mkLiveGraph eGraphUpdate g = do
-  g' <- DMap.traverseWithKey mkDynamicNode g
-  pure $ unsafeBuildIncremental (pure g') eGraphUpdate
+mkLiveGraph eActions eGraphUpdate g = do
+  g' <- DMap.traverseWithKey (mkDynamicNode eActions) g
+  holdIncremental g' eGraphUpdate
+
+data NodeSort
+  = BindingSort
+  | AppSort
+  | LamSort
+  | VarSort
+  | HoleSort
+
+nodeSort ::
+  NodeInfo f a ->
+  NodeSort
+nodeSort node =
+  case node of
+    BindingInfo{} -> BindingSort
+    VarInfo{} -> VarSort
+    HoleInfo{} -> HoleSort
+    AppInfo{} -> AppSort
+    LamInfo{} -> LamSort
 
 renderID ::
   forall t m a.
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
-  , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
-  Event t (MonoidalMap SomeID (Endo Deco)) ->
+  Dynamic t (Map SomeID Deco) ->
+  Event t (DMap ID Action) ->
   ID a ->
-  m ()
-renderID dGraph eDecos i = do
+  m (Dynamic t (Maybe NodeSort))
+renderID dGraph dDecos eActions i = do
   dm_node <- lookupIncremental dGraph i
   bIsLeaf <-
     fmap current . holdUniqDyn $
     dm_node >>= maybe (pure False) (fmap isLeaf)
-  dStyle <-
-    foldDyn (($) . appEndo) emptyDeco $
-    fmapMaybe (MonoidalMap.lookup $ SomeID i) eDecos
+  let dStyle = maybe mempty decoStyle . Map.lookup (SomeID i) <$> dDecos
   let
     dAttrs =
       (\deco ->
          "id" =: fromString (show i) <>
-         "style" =: decoStyle deco) <$>
+         "style" =: deco) <$>
       dStyle
   (theSpan, _) <-
     elDynAttr' "span" dAttrs . dyn_ $
     maybe
       (text "NOT FOUND")
-      (dyn_ . fmap (renderNode dGraph eDecos)) <$>
+      (dyn_ . fmap (renderNode dGraph dDecos eActions i)) <$>
     dm_node
   let eEnter :: Event t () = domEvent Mouseenter theSpan
   let eLeave :: Event t () = domEvent Mouseleave theSpan
-  tellEvent $ MonoidalMap.singleton (SomeID i) info <$ gate bIsLeaf eEnter
-  tellEvent $ MonoidalMap.singleton (SomeID i) uninfo <$ gate bIsLeaf eLeave
+  tellEvent $ (MonoidalMap.singleton (SomeID i) info, mempty) <$ gate bIsLeaf eEnter
+  tellEvent $ (MonoidalMap.singleton (SomeID i) uninfo, mempty) <$ gate bIsLeaf eLeave
+  pure $ dm_node >>= maybe (pure Nothing) (fmap (Just . nodeSort))
 
 renderNode ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
-  , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
-  Event t (MonoidalMap SomeID (Endo Deco)) ->
+  Dynamic t (Map SomeID Deco) ->
+  Event t (DMap ID Action) ->
+  ID a ->
   NodeInfo (Dynamic t) a ->
   m ()
-renderNode dGraph eDecos node = do
+renderNode dGraph dDecos eActions i node = do
+  let eAction = fmapMaybe (DMap.lookup i) eActions
   case node of
-    BindingInfo _ dVal ->
-      dynText $ fromString <$> dVal
+    BindingInfo _ dVal -> do
+      deCommit <-
+        widgetHold txt $
+        attachWithMaybe
+          (\val ->
+            \case
+              EditBinding ->
+                Just $ do
+                  ti <-
+                    textInput $
+                    TextInputConfig
+                    { _textInputConfig_inputType = "text"
+                    , _textInputConfig_initialValue = fromString val
+                    , _textInputConfig_setValue = never
+                    , _textInputConfig_attributes = mempty
+                    }
+                  pure $ current (value ti) <@ keypress Enter ti
+              CommitBinding{} ->
+                Just txt)
+          (current dVal)
+          eAction
+      let eCommit = switchDyn deCommit
+      tellEvent $ (,) mempty . DMap.singleton i . CommitBinding . Text.unpack <$> eCommit
+      where
+        txt = never <$ dynText (fromString <$> dVal)
     VarInfo _ dVal _ ->
       dynText $ fromString <$> dVal
     HoleInfo _ -> text "_"
     AppInfo _ c1 c2 _ -> do
-      renderID dGraph eDecos c1
+      rec
+        dyn_ $ maybe (pure ()) (brckt1 "(") <$> dSort1
+        dSort1 <- renderID dGraph dDecos eActions c1
+        dyn_ $ maybe (pure ()) (brckt1 ")") <$> dSort1
       text " "
-      renderID dGraph eDecos c2
+      rec
+        dyn_ $ maybe (pure ()) (brckt2 "(") <$> dSort2
+        dSort2 <- renderID dGraph dDecos eActions c2
+        dyn_ $ maybe (pure ()) (brckt2 ")") <$> dSort2
+      pure ()
+      where
+        brckt1 str nd =
+          case nd of
+            LamSort{} -> text str
+            _ -> pure ()
+
+        brckt2 str nd =
+          case nd of
+            LamSort{} -> text str
+            AppSort{} -> text str
+            _ -> pure ()
     LamInfo _ c1 c2 _ -> do
       text "\\"
-      renderID dGraph eDecos c1
+      _ <- renderID dGraph dDecos eActions c1
       text " -> "
-      renderID dGraph eDecos c2
+      _ <- renderID dGraph dDecos eActions c2
+      pure ()
 
 deleteNode :: SomeID -> LiveGraph t -> UpdateLiveGraph t
 deleteNode (SomeID i) graph =
@@ -237,27 +313,44 @@ deleteNode (SomeID i) graph =
          LamInfo ctx _ _ _ -> HoleInfo ctx
          AppInfo ctx _ _ _ -> HoleInfo ctx
 
-appNode :: Reflex t => SomeID -> LiveGraph t -> UpdateLiveGraph t
+appNode :: Reflex t => SomeID -> LiveGraph t -> (UpdateLiveGraph t, Maybe SomeID)
 appNode (SomeID i) graph =
   case DMap.lookup i graph of
-    Nothing -> mempty
-    Just node ->
-      case node of
-        HoleInfo ctx ->
-          let
-            sz = DMap.size graph
-            i1 = ID_Expr sz
-            i2 = ID_Expr $ sz+1
-          in
-            PatchDMap $
-            DMap.insert i (ComposeMaybe . Just $ AppInfo ctx i1 i2 (pure mempty)) $
-            DMap.insert i1 (ComposeMaybe . Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) }) $
-            DMap.insert i2 (ComposeMaybe . Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) }) $
-            mempty
-        BindingInfo{} -> mempty
-        VarInfo{} -> mempty
-        LamInfo{} -> mempty
-        AppInfo{} -> mempty
+    Just (HoleInfo ctx) ->
+      let
+        sz = DMap.size graph
+        i1 = ID_Expr sz
+        i2 = ID_Expr $ sz+1
+      in
+        ( PatchDMap . DMap.fromList $
+          [ i :=> ComposeMaybe (Just $ AppInfo ctx i1 i2 $ pure mempty)
+          , i1 :=> ComposeMaybe (Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) })
+          , i2 :=> ComposeMaybe (Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) })
+          ]
+        , Just $ SomeID i1
+        )
+    _ -> (mempty, Nothing)
+
+lamNode :: Reflex t => SomeID -> LiveGraph t -> (UpdateLiveGraph t, Maybe SomeID)
+lamNode (SomeID i) graph =
+  case DMap.lookup i graph of
+    Just (HoleInfo ctx) ->
+      let
+        sz = DMap.size graph
+        i1 = ID_Binding sz
+        i2 = ID_Expr $ sz+1
+      in
+        ( PatchDMap . DMap.fromList $
+          [ i :=>
+              ComposeMaybe (Just $ LamInfo ctx i1 i2 (pure mempty))
+          , i1 :=>
+              ComposeMaybe (Just $ BindingInfo (ctx { _ctxParent = Just (SomeID i) }) (pure "x"))
+          , i2 :=>
+              ComposeMaybe (Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) })
+          ]
+        , Just $ SomeID i1
+        )
+    _ -> (mempty, Nothing)
 
 headWidget :: DomBuilder t m => m ()
 headWidget = do
@@ -415,6 +508,14 @@ prevLeaf graph = starting
           | SomeID a == i -> uppity (SomeID p) ctx'
           | otherwise -> undefined
 
+editBinding :: forall t. LiveGraph t -> SomeID -> DMap ID Action
+editBinding graph (SomeID i) =
+  fromMaybe mempty $ do
+    node <- DMap.lookup i graph
+    case node of
+      BindingInfo{} -> pure $ DMap.singleton i EditBinding
+      _ -> Nothing
+
 main :: IO ()
 main =
   mainWidgetWithHead headWidget $ do
@@ -428,16 +529,49 @@ main =
     eKeyK <- documentKey "k"
     eKeyLL <- documentKey "L"
     eKeyL <- documentKey "l"
+    eKeyBackslash <- documentKey "\\"
+    eKeyE <- documentKey "e"
     ePostBuild <- getPostBuild
     rec
       let
         eDecos = eDecos_ <> eCursorDeco
         eDelete = deleteNode <$> current dCursor <*> currentIncremental dGraph <@ eKeyD
-        eApp = appNode <$> current dCursor <*> currentIncremental dGraph <@ eKeyA
-      (dGraph, eDecos_) <-
+        (eAppGraph, eAppCursor) =
+          splitE $
+          appNode <$>
+          current dCursor <*>
+          currentIncremental dGraph <@
+          eKeyA
+        (eLamGraph, eLamCursor) =
+          splitE $
+          lamNode <$>
+          current dCursor <*>
+          currentIncremental dGraph <@
+          eKeyBackslash
+        eEditBinding =
+          editBinding <$>
+          currentIncremental dGraph <*>
+          current dCursor <@
+          eKeyE
+        eActions =
+          eEditBinding <>
+          eActions_
+      dDecos <-
+        foldDyn
+          (\(MonoidalMap new) old ->
+             Map.merge
+               (Map.mapMissing $ \_ (Endo v) -> v emptyDeco)
+               Map.preserveMissing
+               (Map.zipWithMatched $ \_ (Endo v1) v2 -> v1 v2)
+               new
+               old)
+          mempty
+          eDecos
+      (dGraph, allEvents) <-
         runEventWriterT $
-          mkLiveGraph (eApp <> eDelete) g <*
-          renderID dGraph eDecos i
+          mkLiveGraph eActions (eLamGraph <> eAppGraph <> eDelete) g <*
+          renderID dGraph dDecos eActions i
+      let (eDecos_, eActions_) = splitE allEvents
       dCursor <-
         holdDyn (SomeID i) . fmapMaybe id $
         mergeWith (<|>)
@@ -447,6 +581,8 @@ main =
         , childNode <$> currentIncremental dGraph <*> current dCursor <@ eKeyJ
         , nextSibling <$> currentIncremental dGraph <*> current dCursor <@ eKeyLL
         , prevSibling <$> currentIncremental dGraph <*> current dCursor <@ eKeyHH
+        , eAppCursor
+        , eLamCursor
         ]
       let
         eCursorDeco =
