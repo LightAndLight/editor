@@ -41,37 +41,32 @@ lookupIncremental ::
   m (Dynamic t (Maybe (Dynamic t (v a))))
 lookupIncremental iMap key = do
   buildDynamic
-    (do
-       mp <- sample $ currentIncremental iMap
-       case DMap.lookup key mp of
-         Nothing -> pure Nothing
-         Just v ->
-           Just <$> do
-             eUpdate <-
-               takeWhileJustE getComposeMaybe $
-               fmapMaybe (DMap.lookup key . unPatchDMap) (updatedIncremental iMap)
-             holdDyn v eUpdate)
+    (sample (currentIncremental iMap) >>=
+     maybe (pure Nothing) dynPart . DMap.lookup key)
     (push
        (\(PatchDMap patch) ->
           case DMap.lookup key patch of
             Nothing -> pure Nothing
-            Just (ComposeMaybe mv) ->
+            Just (ComposeMaybe mv) -> do
+              old <- sample $ currentIncremental iMap
               case mv of
-                Just v -> do
-                  old <- sample $ currentIncremental iMap
+                Just v ->
                   if DMap.member key old
-                    then pure Nothing
-                    else Just . Just <$> do
-                      eUpdate <-
-                        takeWhileJustE getComposeMaybe $
-                        fmapMaybe (DMap.lookup key . unPatchDMap) (updatedIncremental iMap)
-                      holdDyn v eUpdate
-                Nothing -> do
-                  old <- sample $ currentIncremental iMap
+                  then pure Nothing
+                  else Just <$> dynPart v
+                Nothing ->
+                  pure $
                   if DMap.member key old
-                    then pure $ Just Nothing
-                    else pure Nothing)
+                  then Just Nothing
+                  else Nothing)
        (updatedIncremental iMap))
+  where
+    dynPart v =
+      Just <$> do
+        eUpdate <-
+          takeWhileJustE getComposeMaybe $
+          fmapMaybe (DMap.lookup key . unPatchDMap) (updatedIncremental iMap)
+        holdDyn v eUpdate
 
 data Deco
   = Deco
