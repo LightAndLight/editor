@@ -261,7 +261,6 @@ renderNode dGraph dDecos eActions i node = do
                     , _textInputConfig_setValue = never
                     , _textInputConfig_attributes = mempty
                     }
-                  -- Element.focus $ _element_raw $ _inputElement_element $ _textInput_builderElement ti
                   Element.focus $ _inputElement_raw $ _textInput_builderElement ti
                   InputElement.select $ _inputElement_raw $ _textInput_builderElement ti
                   pure $ current (value ti) <@ keypress Enter ti
