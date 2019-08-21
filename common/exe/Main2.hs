@@ -163,7 +163,6 @@ mkLiveGraph ::
   m (Incremental t (UpdateLiveGraph t))
 mkLiveGraph eGraphUpdate g = do
   g' <- DMap.traverseWithKey mkDynamicNode g
-  -- foldDyn (($) . appEndo) g' eGraphUpdate
   pure $ unsafeBuildIncremental (pure g') eGraphUpdate
 
 renderID ::
@@ -171,7 +170,6 @@ renderID ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
   ) =>
-  -- Dynamic t (LiveGraphIn t) ->
   Incremental t (UpdateLiveGraph t) ->
   Event t (MonoidalMap SomeID (Endo Deco)) ->
   ID a ->
@@ -181,7 +179,6 @@ renderID dGraph eDecos i = do
   bIsLeaf <-
     fmap current . holdUniqDyn $
     dm_node >>= maybe (pure False) (fmap isLeaf)
-  -- let bIsLeaf :: Behavior t Bool = current $ isLeaf dGraph i
   dStyle <-
     foldDyn (($) . appEndo) emptyDeco $
     fmapMaybe (MonoidalMap.lookup $ SomeID i) eDecos
@@ -191,12 +188,11 @@ renderID dGraph eDecos i = do
          "id" =: fromString (show i) <>
          "style" =: decoStyle deco) <$>
       dStyle
-  -- dm_node <- maybeDyn $ DMap.lookup i <$> dGraph
   (theSpan, _) <-
     elDynAttr' "span" dAttrs . dyn_ $
     maybe
       (text "NOT FOUND")
-      (\dNode -> dyn_ $ renderNode dGraph eDecos <$> dNode) <$>
+      (dyn_ . fmap (renderNode dGraph eDecos)) <$>
     dm_node
   let eEnter :: Event t () = domEvent Mouseenter theSpan
   let eLeave :: Event t () = domEvent Mouseleave theSpan
@@ -207,7 +203,6 @@ renderNode ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , EventWriter t (MonoidalMap SomeID (Endo Deco)) m
   ) =>
-  -- Dynamic t (LiveGraphIn t) ->
   Incremental t (UpdateLiveGraph t) ->
   Event t (MonoidalMap SomeID (Endo Deco)) ->
   NodeInfo (Dynamic t) a ->
