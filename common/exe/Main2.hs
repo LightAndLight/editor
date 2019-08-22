@@ -5,6 +5,7 @@
 {-# language OverloadedStrings #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
+{-# language StandaloneDeriving #-}
 module Main2 where
 
 import Control.Applicative ((<|>))
@@ -133,6 +134,7 @@ mkDynamicContext (Context p (Identity sc)) =
 data Action a where
   EditBinding :: Action Binding
   CommitBinding :: String -> Action Binding
+deriving instance Show (Action a)
 
 mkDynamicNode ::
   (Reflex t, MonadHold t m) =>
@@ -200,6 +202,7 @@ renderID ::
   forall t m a.
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , DomBuilderSpace m ~ GhcjsDomSpace, MonadJSM m
+  , PerformEvent t m, MonadJSM (Performable m), TriggerEvent t m
   , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
@@ -234,6 +237,7 @@ renderID dGraph dDecos eActions i = do
 renderNode ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , DomBuilderSpace m ~ GhcjsDomSpace, MonadJSM m
+  , PerformEvent t m, MonadJSM (Performable m), TriggerEvent t m
   , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
@@ -261,8 +265,12 @@ renderNode dGraph dDecos eActions i node = do
                     , _textInputConfig_setValue = never
                     , _textInputConfig_attributes = mempty
                     }
-                  Element.focus $ _inputElement_raw $ _textInput_builderElement ti
-                  InputElement.select $ _inputElement_raw $ _textInput_builderElement ti
+                  ePostBuild <- delay 0.05 =<< getPostBuild
+                  performEvent_ $
+                    (do
+                       Element.focus $ _inputElement_raw $ _textInput_builderElement ti
+                       InputElement.select $ _inputElement_raw $ _textInput_builderElement ti) <$
+                    ePostBuild
                   pure $ current (value ti) <@ keypress Enter ti
               CommitBinding{} ->
                 Just txt)
