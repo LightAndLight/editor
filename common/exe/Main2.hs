@@ -40,7 +40,7 @@ import Editor
   ( Context(..), emptyContext, NodeInfo(..), ID(..)
   , SomeID(..), Expr(..), Binding(..)
   , unbuild
-  , parent
+  , context, parent
   )
 
 lookupIncremental ::
@@ -125,11 +125,33 @@ isLeaf node =
     LamInfo{} -> False
 
 mkDynamicContext ::
-  (Reflex t, Applicative m) =>
+  (Reflex t, MonadHold t m) =>
+  Incremental t (UpdateLiveGraph t) ->
   Context Identity ->
   m (Context (Dynamic t))
-mkDynamicContext (Context p (Identity sc)) =
-  pure $ Context p (pure sc)
+mkDynamicContext dGraph (Context p (Identity sc)) = do
+  dm_dNode <-
+    case p of
+      Nothing -> pure $ constDyn Nothing
+      Just pid -> lookupIncremental pid dGraph
+  edParentScope <-
+    networkView $ do
+      m_dNode <- dm_dNode
+      case m_dNode of
+        Just (LamInfo ctx bid _ _) -> do
+          dBinding <- lookupIncremental bid dGraph
+          let
+            dBindingVal =
+              dBinding >>= \(BindingInfo _ dVal) -> fmap Binding dVal
+          pure $
+            Map.insert <$>
+            dBindingVal <*>
+            _ctxLocalScope ctx
+        Just dNode -> pure $ dNode >>= _ctxLocalScope . context
+        Nothing -> pure $ constDyn mempty
+  dScope <-
+    holdDyn sc $ push (fmap Just . sample . current) edParentScope
+  pure $ Context p dScope
 
 data Action a where
   EditBinding :: Action Binding
@@ -138,17 +160,18 @@ deriving instance Show (Action a)
 
 mkDynamicNode ::
   (Reflex t, MonadHold t m) =>
+  Incremental t (UpdateLiveGraph t) ->
   Event t (DMap ID Action) ->
   ID a ->
   NodeInfo Identity a ->
   m (NodeInfo (Dynamic t) a)
-mkDynamicNode eActions i node =
+mkDynamicNode dGraph eActions i node =
   let
     eAction = fmapMaybe (DMap.lookup i) eActions
   in
   case node of
     BindingInfo ctx (Identity val) -> do
-      ctx' <- mkDynamicContext ctx
+      ctx' <- mkDynamicContext dGraph ctx
       dVal <-
         holdDyn val $
         fmapMaybe
@@ -156,16 +179,16 @@ mkDynamicNode eActions i node =
           eAction
       pure $ BindingInfo ctx' dVal
     VarInfo ctx (Identity val) (Identity vars) -> do
-      ctx' <- mkDynamicContext ctx
+      ctx' <- mkDynamicContext dGraph ctx
       pure $ VarInfo ctx' (pure val) (pure vars)
     HoleInfo ctx -> do
-      ctx' <- mkDynamicContext ctx
+      ctx' <- mkDynamicContext dGraph ctx
       pure $ HoleInfo ctx'
     AppInfo ctx c1 c2 (Identity vars) -> do
-      ctx' <- mkDynamicContext ctx
+      ctx' <- mkDynamicContext dGraph ctx
       pure $ AppInfo ctx' c1 c2 (pure vars)
     LamInfo ctx c1 c2 (Identity vars) -> do
-      ctx' <- mkDynamicContext ctx
+      ctx' <- mkDynamicContext dGraph ctx
       pure $ LamInfo ctx' c1 c2 (pure vars)
 
 mkLiveGraph ::
@@ -177,8 +200,10 @@ mkLiveGraph ::
   Graph ->
   m (Incremental t (UpdateLiveGraph t))
 mkLiveGraph eActions eGraphUpdate g = do
-  g' <- DMap.traverseWithKey (mkDynamicNode eActions) g
-  holdIncremental g' eGraphUpdate
+  rec
+    g' <- DMap.traverseWithKey (mkDynamicNode g'' eActions) g
+    g'' <- holdIncremental g' eGraphUpdate
+  pure g''
 
 data NodeSort
   = BindingSort
