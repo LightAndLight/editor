@@ -6,7 +6,7 @@
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
-module Main2 where
+module Main where
 
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
@@ -21,7 +21,7 @@ import Data.Monoid (Endo(..))
 import Data.String (fromString)
 import Data.Text (Text)
 import GHCJS.DOM.KeyboardEvent (getKey)
-import JSDOM.EventM (event, on)
+import GHCJS.DOM.EventM (event, on)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex
 import Reflex.Dom
