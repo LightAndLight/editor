@@ -40,6 +40,7 @@ executable frontend
                      , dependent-sum-template
                      , common
                      , ghcjs-dom
+                     , lens
                      , mtl
                      , jsaddle
                      , jsaddle-dom

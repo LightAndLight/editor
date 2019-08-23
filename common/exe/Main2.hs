@@ -1,4 +1,5 @@
 {-# language FlexibleContexts #-}
+{-# language FlexibleInstances, MultiParamTypeClasses #-}
 {-# language GADTs #-}
 {-# language GeneralizedNewtypeDeriving #-}
 {-# language LambdaCase #-}
@@ -6,11 +7,15 @@
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
+{-# language UndecidableInstances #-}
 module Main where
 
 import Control.Applicative ((<|>))
+import Control.Lens.Lens (Lens')
 import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
+import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Trans (lift)
 import Data.Dependent.Map (DMap, GCompare)
 import Data.Dependent.Sum (DSum(..))
 import Data.Functor.Identity (Identity(..))
@@ -21,10 +26,10 @@ import Data.Monoid (Endo(..))
 import Data.String (fromString)
 import Data.Text (Text)
 import GHCJS.DOM.KeyboardEvent (getKey)
-import GHCJS.DOM.EventM (event, on)
+import GHCJS.DOM.EventM (event, on, mouseClientXY, preventDefault)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex
-import Reflex.Dom
+import Reflex.Dom hiding (preventDefault)
 import Data.Functor.Misc
 
 import qualified Data.Dependent.Map as DMap
@@ -77,6 +82,15 @@ lookupIncremental iMap key = do
           fmapMaybe (DMap.lookup key . unPatchDMap) (updatedIncremental iMap)
         holdDyn v eUpdate
 
+contextMenu ::
+  (TriggerEvent t m, MonadJSM m) =>
+  Element er GhcjsDomSpace t ->
+  m (Event t (Int, Int))
+contextMenu e =
+  wrapDomEvent (_element_raw e) (elementOnEventName Contextmenu) $ do
+    preventDefault
+    mouseClientXY
+
 data Deco
   = Deco
   { _decoWarn :: Bool
@@ -126,36 +140,16 @@ isLeaf node =
 
 mkDynamicContext ::
   (Reflex t, MonadHold t m) =>
-  Incremental t (UpdateLiveGraph t) ->
   Context Identity ->
   m (Context (Dynamic t))
-mkDynamicContext dGraph (Context p (Identity sc)) = do
-  dm_dNode <-
-    case p of
-      Nothing -> pure $ constDyn Nothing
-      Just pid -> lookupIncremental pid dGraph
-  edParentScope <-
-    networkView $ do
-      m_dNode <- dm_dNode
-      case m_dNode of
-        Just (LamInfo ctx bid _ _) -> do
-          dBinding <- lookupIncremental bid dGraph
-          let
-            dBindingVal =
-              dBinding >>= \(BindingInfo _ dVal) -> fmap Binding dVal
-          pure $
-            Map.insert <$>
-            dBindingVal <*>
-            _ctxLocalScope ctx
-        Just dNode -> pure $ dNode >>= _ctxLocalScope . context
-        Nothing -> pure $ constDyn mempty
-  dScope <-
-    holdDyn sc $ push (fmap Just . sample . current) edParentScope
-  pure $ Context p dScope
+mkDynamicContext (Context p (Identity sc)) = do
+  pure $ Context p (pure sc)
 
 data Action a where
   EditBinding :: Action Binding
   CommitBinding :: String -> Action Binding
+  OpenMenu :: Int -> Int -> Action a
+  CloseMenu :: Action a
 deriving instance Show (Action a)
 
 mkDynamicNode ::
@@ -171,7 +165,7 @@ mkDynamicNode dGraph eActions i node =
   in
   case node of
     BindingInfo ctx (Identity val) -> do
-      ctx' <- mkDynamicContext dGraph ctx
+      ctx' <- mkDynamicContext ctx
       dVal <-
         holdDyn val $
         fmapMaybe
@@ -179,16 +173,16 @@ mkDynamicNode dGraph eActions i node =
           eAction
       pure $ BindingInfo ctx' dVal
     VarInfo ctx (Identity val) (Identity vars) -> do
-      ctx' <- mkDynamicContext dGraph ctx
+      ctx' <- mkDynamicContext ctx
       pure $ VarInfo ctx' (pure val) (pure vars)
     HoleInfo ctx -> do
-      ctx' <- mkDynamicContext dGraph ctx
+      ctx' <- mkDynamicContext ctx
       pure $ HoleInfo ctx'
     AppInfo ctx c1 c2 (Identity vars) -> do
-      ctx' <- mkDynamicContext dGraph ctx
+      ctx' <- mkDynamicContext ctx
       pure $ AppInfo ctx' c1 c2 (pure vars)
     LamInfo ctx c1 c2 (Identity vars) -> do
-      ctx' <- mkDynamicContext dGraph ctx
+      ctx' <- mkDynamicContext ctx
       pure $ LamInfo ctx' c1 c2 (pure vars)
 
 mkLiveGraph ::
@@ -223,6 +217,55 @@ nodeSort node =
     AppInfo{} -> AppSort
     LamInfo{} -> LamSort
 
+newtype AppEventsT t m a
+  = AppEventsT
+  { unAppEventsT ::
+      EventWriterT t
+        (MonoidalMap SomeID (Endo Deco))
+        (EventWriterT t
+           (DMap ID Action)
+           m)
+        a
+  } deriving
+  ( Functor, Applicative, Monad
+  , MonadSample t, MonadHold t
+  , PostBuild t, PerformEvent t, TriggerEvent t
+  , MonadIO, MonadJSM
+  )
+
+instance EventWriter t AppEvents (AppEventsT t m) where
+  tellEvent e =
+    AppEventT $ do
+      tellEvent $ _aeDecos <$> e
+      lift . tellEvent $ _aeActions <$> e
+
+data AppEvents
+  = AppEvents
+  { _aeDecos :: MonoidalMap SomeID (Endo Deco)
+  , _aeActions :: DMap ID Action
+  }
+
+instance Semigroup AppEvents where
+  AppEvents a b <> AppEvents a' b' = AppEvents (a <> a') (b <> b')
+
+instance Monoid AppEvents where
+  mempty = AppEvents mempty mempty
+
+class HasDecos a where
+  decos :: Lens' a (MonoidalMap SomeID (Endo Deco))
+
+class HasActions a where
+  actions :: Lens' a (DMap ID Action)
+
+instance (MonadHold t m, Adjustable t m) => Adjustable t (AppEventsT t m) where
+  runWithReplace a b = AppEventsT $ runWithReplace (unAppEventsT a) (coerceEvent b)
+  traverseIntMapWithKeyWithAdjust a b c =
+    AppEventsT $ traverseIntMapWithKeyWithAdjust (\x y -> unAppEventsT $ a x y) b c
+  traverseDMapWithKeyWithAdjust a b c =
+    AppEventsT $ traverseDMapWithKeyWithAdjust (\x y -> unAppEventsT $ a x y) b c
+  traverseDMapWithKeyWithAdjustWithMove a b c =
+    AppEventsT $ traverseDMapWithKeyWithAdjustWithMove (\x y -> unAppEventsT $ a x y) b c
+
 renderID ::
   forall t m a.
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
@@ -253,6 +296,8 @@ renderID dGraph dDecos eActions i = do
       (text "NOT FOUND")
       (dyn_ . fmap (renderNode dGraph dDecos eActions i)) <$>
     dm_node
+  eContextMenu <- contextMenu theSpan
+  tellEvent $ (,) mempty . DMap.singleton i . uncurry OpenMenu <$> eContextMenu
   let eEnter :: Event t () = domEvent Mouseenter theSpan
   let eLeave :: Event t () = domEvent Mouseleave theSpan
   tellEvent $ (MonoidalMap.singleton (SomeID i) info, mempty) <$ gate bIsLeaf eEnter
@@ -298,7 +343,9 @@ renderNode dGraph dDecos eActions i node = do
                     ePostBuild
                   pure $ current (value ti) <@ keypress Enter ti
               CommitBinding{} ->
-                Just txt)
+                Just txt
+              OpenMenu{} -> Nothing
+              CloseMenu{} -> Nothing)
           (current dVal)
           eAction
       let eCommit = switchDyn deCommit
