@@ -16,7 +16,7 @@ category:            Language
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Editor
+  exposed-modules:     Editor, Data.GADT.Prism
   build-depends:       base ^>=4.11.0.0
                      , constraints-extras
                      , containers ^>= 0.5

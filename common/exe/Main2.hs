@@ -4,21 +4,22 @@
 {-# language GeneralizedNewtypeDeriving #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language RankNTypes #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
+{-# language TemplateHaskell #-}
 {-# language UndecidableInstances #-}
+{-# language PolyKinds, KindSignatures #-}
 module Main where
 
 import Control.Applicative ((<|>))
-import Control.Lens.Lens (Lens')
 import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
-import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Trans (lift)
 import Data.Dependent.Map (DMap, GCompare)
 import Data.Dependent.Sum (DSum(..))
 import Data.Functor.Identity (Identity(..))
+import Data.GADT.Compare.TH (deriveGEq, deriveGCompare)
 import Data.Map (Map)
 import Data.Map.Monoidal (MonoidalMap(..))
 import Data.Maybe (fromMaybe)
@@ -45,8 +46,9 @@ import Editor
   ( Context(..), emptyContext, NodeInfo(..), ID(..)
   , SomeID(..), Expr(..), Binding(..)
   , unbuild
-  , context, parent
+  , parent
   )
+import Data.GADT.Prism
 
 lookupIncremental ::
   (GCompare k, Reflex t, MonadHold t m) =>
@@ -148,8 +150,6 @@ mkDynamicContext (Context p (Identity sc)) = do
 data Action a where
   EditBinding :: Action Binding
   CommitBinding :: String -> Action Binding
-  OpenMenu :: Int -> Int -> Action a
-  CloseMenu :: Action a
 deriving instance Show (Action a)
 
 mkDynamicNode ::
@@ -159,7 +159,7 @@ mkDynamicNode ::
   ID a ->
   NodeInfo Identity a ->
   m (NodeInfo (Dynamic t) a)
-mkDynamicNode dGraph eActions i node =
+mkDynamicNode _ eActions i node =
   let
     eAction = fmapMaybe (DMap.lookup i) eActions
   in
@@ -187,7 +187,7 @@ mkDynamicNode dGraph eActions i node =
 
 mkLiveGraph ::
   ( DomBuilder t m, MonadHold t m, MonadFix m, PostBuild t m
-  , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
+  , EventWriter t (DMap k Identity) m
   ) =>
   Event t (DMap ID Action) ->
   Event t (UpdateLiveGraph t) ->
@@ -217,61 +217,53 @@ nodeSort node =
     AppInfo{} -> AppSort
     LamInfo{} -> LamSort
 
-newtype AppEventsT t m a
-  = AppEventsT
-  { unAppEventsT ::
-      EventWriterT t
-        (MonoidalMap SomeID (Endo Deco))
-        (EventWriterT t
-           (DMap ID Action)
-           m)
-        a
-  } deriving
-  ( Functor, Applicative, Monad
-  , MonadSample t, MonadHold t
-  , PostBuild t, PerformEvent t, TriggerEvent t
-  , MonadIO, MonadJSM
-  )
+class GCompare k => ActionsKey k where
+  actionsK :: GPrism1 (DMap ID Action) k ()
 
-instance EventWriter t AppEvents (AppEventsT t m) where
-  tellEvent e =
-    AppEventT $ do
-      tellEvent $ _aeDecos <$> e
-      lift . tellEvent $ _aeActions <$> e
+class GCompare k => DecosKey k where
+  decosK :: GPrism1 (MonoidalMap SomeID (Endo Deco)) k ()
 
-data AppEvents
-  = AppEvents
-  { _aeDecos :: MonoidalMap SomeID (Endo Deco)
-  , _aeActions :: DMap ID Action
-  }
+class GCompare k => ContextMenuKey k where
+  contextMenuK :: GPrism1 (SomeID, Int, Int) k ()
 
-instance Semigroup AppEvents where
-  AppEvents a b <> AppEvents a' b' = AppEvents (a <> a') (b <> b')
+data AppEventK a where
+  ActionsK :: AppEventK (DMap ID Action)
+  DecosK :: AppEventK (MonoidalMap SomeID (Endo Deco))
+  ContextMenuK :: AppEventK (SomeID, Int, Int)
+deriveGEq ''AppEventK
+deriveGCompare ''AppEventK
 
-instance Monoid AppEvents where
-  mempty = AppEvents mempty mempty
+instance ActionsKey AppEventK where
+  actionsK = GPrism1 (\() -> ActionsK) (\r1 r2 -> \case; ActionsK -> r1 (); _ -> r2)
+instance DecosKey AppEventK where
+  decosK = GPrism1 (\() -> DecosK) (\r1 r2 -> \case; DecosK -> r1 (); _ -> r2)
+instance ContextMenuKey AppEventK where
+  contextMenuK = GPrism1 (\() -> ContextMenuK) (\r1 r2 -> \case; ContextMenuK -> r1 (); _ -> r2)
 
-class HasDecos a where
-  decos :: Lens' a (MonoidalMap SomeID (Endo Deco))
+tellActions ::
+  (Reflex t, ActionsKey k, EventWriter t (DMap k Identity) m) =>
+  Event t (DMap ID Action) ->
+  m ()
+tellActions = tellEvent . fmap (DMap.singleton (greview1 actionsK ()) . pure)
 
-class HasActions a where
-  actions :: Lens' a (DMap ID Action)
+tellDecos ::
+  (Reflex t, DecosKey k, EventWriter t (DMap k Identity) m) =>
+  Event t (MonoidalMap SomeID (Endo Deco)) ->
+  m ()
+tellDecos = tellEvent . fmap (DMap.singleton (greview1 decosK ()) . pure)
 
-instance (MonadHold t m, Adjustable t m) => Adjustable t (AppEventsT t m) where
-  runWithReplace a b = AppEventsT $ runWithReplace (unAppEventsT a) (coerceEvent b)
-  traverseIntMapWithKeyWithAdjust a b c =
-    AppEventsT $ traverseIntMapWithKeyWithAdjust (\x y -> unAppEventsT $ a x y) b c
-  traverseDMapWithKeyWithAdjust a b c =
-    AppEventsT $ traverseDMapWithKeyWithAdjust (\x y -> unAppEventsT $ a x y) b c
-  traverseDMapWithKeyWithAdjustWithMove a b c =
-    AppEventsT $ traverseDMapWithKeyWithAdjustWithMove (\x y -> unAppEventsT $ a x y) b c
+tellContextMenu ::
+  (Reflex t, ContextMenuKey k, EventWriter t (DMap k Identity) m) =>
+  Event t (SomeID, Int, Int) ->
+  m ()
+tellContextMenu = tellEvent . fmap (DMap.singleton (greview1 contextMenuK ()) . pure)
 
 renderID ::
-  forall t m a.
+  forall t k m a.
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , DomBuilderSpace m ~ GhcjsDomSpace, MonadJSM m
   , PerformEvent t m, MonadJSM (Performable m), TriggerEvent t m
-  , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
+  , ActionsKey k, DecosKey k, ContextMenuKey k, EventWriter t (DMap k Identity) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
   Dynamic t (Map SomeID Deco) ->
@@ -297,18 +289,18 @@ renderID dGraph dDecos eActions i = do
       (dyn_ . fmap (renderNode dGraph dDecos eActions i)) <$>
     dm_node
   eContextMenu <- contextMenu theSpan
-  tellEvent $ (,) mempty . DMap.singleton i . uncurry OpenMenu <$> eContextMenu
+  tellContextMenu $ (\(x, y) -> (SomeID i, x, y)) <$> eContextMenu
   let eEnter :: Event t () = domEvent Mouseenter theSpan
   let eLeave :: Event t () = domEvent Mouseleave theSpan
-  tellEvent $ (MonoidalMap.singleton (SomeID i) info, mempty) <$ gate bIsLeaf eEnter
-  tellEvent $ (MonoidalMap.singleton (SomeID i) uninfo, mempty) <$ gate bIsLeaf eLeave
+  tellDecos $ MonoidalMap.singleton (SomeID i) info <$ gate bIsLeaf eEnter
+  tellDecos $ MonoidalMap.singleton (SomeID i) uninfo <$ gate bIsLeaf eLeave
   pure $ dm_node >>= maybe (pure Nothing) (fmap (Just . nodeSort))
 
 renderNode ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
   , DomBuilderSpace m ~ GhcjsDomSpace, MonadJSM m
   , PerformEvent t m, MonadJSM (Performable m), TriggerEvent t m
-  , EventWriter t (MonoidalMap SomeID (Endo Deco), DMap ID Action) m
+  , ActionsKey k, DecosKey k, ContextMenuKey k, EventWriter t (DMap k Identity) m
   ) =>
   Incremental t (UpdateLiveGraph t) ->
   Dynamic t (Map SomeID Deco) ->
@@ -343,13 +335,11 @@ renderNode dGraph dDecos eActions i node = do
                     ePostBuild
                   pure $ current (value ti) <@ keypress Enter ti
               CommitBinding{} ->
-                Just txt
-              OpenMenu{} -> Nothing
-              CloseMenu{} -> Nothing)
+                Just txt)
           (current dVal)
           eAction
       let eCommit = switchDyn deCommit
-      tellEvent $ (,) mempty . DMap.singleton i . CommitBinding . Text.unpack <$> eCommit
+      tellActions $ DMap.singleton i . CommitBinding . Text.unpack <$> eCommit
       where
         txt = never <$ dynText (fromString <$> dVal)
     VarInfo _ dVal _ ->
@@ -600,6 +590,37 @@ editBinding graph (SomeID i) =
       BindingInfo{} -> pure $ DMap.singleton i EditBinding
       _ -> Nothing
 
+data MenuItems
+
+menuContent :: DomBuilder t m => [MenuItems] -> m ()
+menuContent _ = text "No Items"
+
+mkContextMenu ::
+  (MonadHold t m, DomBuilder t m, PostBuild t m) =>
+  Event t (SomeID, Int, Int) ->
+  Event t () ->
+  m ()
+mkContextMenu eMenu eMenuClose = do
+  dMenuContent <- holdDyn [] $ (\(ii, _, _) -> const [] ii) <$> eMenu
+  dMenuDisplay <-
+    holdDyn "display: none;" $
+    leftmost ["" <$ eMenu, "display: none;" <$ eMenuClose]
+  dMenuPosition <-
+    holdDyn "" $
+    (\(_, x, y) ->
+        "left: " <> fromString (show x) <> "px;" <>
+        "top: " <> fromString (show y) <> "px;") <$>
+    eMenu
+  let
+    mkStyle d =
+      (=:) "style" $
+      "border: 1px solid black;" <>
+      "background-color: white;" <>
+      "position: absolute;" <>
+      d
+  elDynAttr "div" (mkStyle <$> (dMenuDisplay <> dMenuPosition)) $
+    dyn_ $ menuContent <$> dMenuContent
+
 main :: IO ()
 main =
   mainWidgetWithHead headWidget $ do
@@ -618,7 +639,7 @@ main =
     ePostBuild <- getPostBuild
     rec
       let
-        eDecos = eDecos_ <> eCursorDeco
+        eDecos = select appEventSelector DecosK <> eCursorDeco
         eDelete = deleteNode <$> current dCursor <*> currentIncremental dGraph <@ eKeyD
         (eAppGraph, eAppCursor) =
           splitE $
@@ -639,7 +660,7 @@ main =
           eKeyE
         eActions =
           eEditBinding <>
-          eActions_
+          select appEventSelector ActionsK
       dDecos <-
         foldDyn
           (\(MonoidalMap new) old ->
@@ -651,11 +672,11 @@ main =
                old)
           mempty
           eDecos
-      (dGraph, allEvents) <-
+      (dGraph, appEvents) <-
         runEventWriterT $
           mkLiveGraph eActions (eLamGraph <> eAppGraph <> eDelete) g <*
           renderID dGraph dDecos eActions i
-      let (eDecos_, eActions_) = splitE allEvents
+      let appEventSelector = fan appEvents
       dCursor <-
         holdDyn (SomeID i) . fmapMaybe id $
         mergeWith (<|>)
@@ -678,4 +699,7 @@ main =
               else Nothing)
             (current dCursor)
             (updated dCursor)
+    let eMenu = select appEventSelector ContextMenuK
+    let eMenuClose = never
+    mkContextMenu eMenu eMenuClose
     pure ()
