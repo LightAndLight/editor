@@ -152,6 +152,18 @@ data Action a where
   CommitBinding :: String -> Action Binding
 deriving instance Show (Action a)
 
+isEditStart :: Action a -> Bool
+isEditStart a =
+  case a of
+    EditBinding -> True
+    CommitBinding{} -> False
+
+isEditStop :: Action a -> Bool
+isEditStop a =
+  case a of
+    EditBinding -> False
+    CommitBinding{} -> True
+
 mkDynamicNode ::
   (Reflex t, MonadHold t m) =>
   Incremental t (UpdateLiveGraph t) ->
@@ -441,6 +453,15 @@ documentKey k' = do
   fmapMaybe (\k -> guard $ k == k') <$>
     wrapDomEvent document (`on` Event.keyDown) (getKey =<< event)
 
+documentClick ::
+  ( Reflex t, HasDocument m, TriggerEvent t m, MonadJSM m
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  ) =>
+  m (Event t ())
+documentClick = do
+  document <- askDocument
+  wrapDomEvent document (`on` Event.click) (pure ())
+
 parentNode :: LiveGraph t -> SomeID -> Maybe SomeID
 parentNode graph (SomeID i) = do
   node <- DMap.lookup i graph
@@ -592,11 +613,20 @@ editBinding graph (SomeID i) =
 
 data MenuItems
 
-menuContent :: DomBuilder t m => [MenuItems] -> m ()
-menuContent _ = text "No Items"
+menuContent ::
+  (MonadHold t m, MonadFix m, DomBuilder t m, PostBuild t m) =>
+  [MenuItems] ->
+  m ()
+menuContent _ = do
+  rec
+    let eEnter = domEvent Mouseenter theSpan
+    let eExit = domEvent Mouseleave theSpan
+    dStyle <- holdDyn "" (leftmost ["background-color: gray" <$ eEnter, "" <$ eExit])
+    (theSpan, res) <- elDynAttr' "span" (("style" =:) <$> dStyle) $ text "No Items"
+  pure res
 
 mkContextMenu ::
-  (MonadHold t m, DomBuilder t m, PostBuild t m) =>
+  (MonadHold t m, MonadFix m, DomBuilder t m, PostBuild t m) =>
   Event t (SomeID, Int, Int) ->
   Event t () ->
   m ()
@@ -626,18 +656,18 @@ main =
   mainWidgetWithHead headWidget $ do
     let e = Lam (Binding "f") $ Lam (Binding "x") $ App (App (Var "f") (Var "x")) (Var "x")
     let (i, g, _) = unbuild mempty emptyContext e
-    eKeyD <- documentKey "d"
-    eKeyA <- documentKey "a"
-    eKeyHH <- documentKey "H"
-    eKeyH <- documentKey "h"
-    eKeyJ <- documentKey "j"
-    eKeyK <- documentKey "k"
-    eKeyLL <- documentKey "L"
-    eKeyL <- documentKey "l"
-    eKeyBackslash <- documentKey "\\"
-    eKeyE <- documentKey "e"
     ePostBuild <- getPostBuild
     rec
+      eKeyD <- gate bNotEditing <$> documentKey "d"
+      eKeyA <- gate bNotEditing <$> documentKey "a"
+      eKeyHH <- gate bNotEditing <$> documentKey "H"
+      eKeyH <- gate bNotEditing <$> documentKey "h"
+      eKeyJ <- gate bNotEditing <$> documentKey "j"
+      eKeyK <- gate bNotEditing <$> documentKey "k"
+      eKeyLL <- gate bNotEditing <$> documentKey "L"
+      eKeyL <- gate bNotEditing <$> documentKey "l"
+      eKeyBackslash <- gate bNotEditing <$> documentKey "\\"
+      eKeyE <- gate bNotEditing <$> documentKey "e"
       let
         eDecos = select appEventSelector DecosK <> eCursorDeco
         eDelete = deleteNode <$> current dCursor <*> currentIncremental dGraph <@ eKeyD
@@ -677,6 +707,12 @@ main =
           mkLiveGraph eActions (eLamGraph <> eAppGraph <> eDelete) g <*
           renderID dGraph dDecos eActions i
       let appEventSelector = fan appEvents
+      let
+        eStartEditing =
+          ffilter (DMap.foldrWithKey (\_ v rest -> isEditStart v || rest) False) eActions
+        eStopEditing =
+          ffilter (DMap.foldrWithKey (\_ v rest -> isEditStop v || rest) False) eActions
+      bNotEditing <- hold True $ leftmost [False <$ eStartEditing, True <$ eStopEditing]
       dCursor <-
         holdDyn (SomeID i) . fmapMaybe id $
         mergeWith (<|>)
@@ -700,6 +736,6 @@ main =
             (current dCursor)
             (updated dCursor)
     let eMenu = select appEventSelector ContextMenuK
-    let eMenuClose = never
+    eMenuClose <- documentClick
     mkContextMenu eMenu eMenuClose
     pure ()
