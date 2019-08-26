@@ -43,7 +43,8 @@ import qualified GHCJS.DOM.HTMLElement as Element (focus)
 import qualified GHCJS.DOM.HTMLInputElement as InputElement (select)
 
 import Editor
-  ( Context(..), emptyContext, NodeInfo(..), ID(..)
+  ( BindingContext(..), toContext
+  , Context(..), emptyContext, NodeInfo(..), ID(..)
   , SomeID(..), Expr(..), Binding(..)
   , unbuild
   , parent
@@ -147,6 +148,13 @@ mkDynamicContext ::
 mkDynamicContext (Context p (Identity sc)) = do
   pure $ Context p (pure sc)
 
+mkDynamicBindingContext ::
+  (Reflex t, MonadHold t m) =>
+  BindingContext Identity ->
+  m (BindingContext (Dynamic t))
+mkDynamicBindingContext (BindingContext p (Identity sc)) = do
+  pure $ BindingContext p (pure sc)
+
 data Action a where
   EditBinding :: Action Binding
   CommitBinding :: String -> Action Binding
@@ -177,7 +185,7 @@ mkDynamicNode _ eActions i node =
   in
   case node of
     BindingInfo ctx (Identity val) -> do
-      ctx' <- mkDynamicContext ctx
+      ctx' <- mkDynamicBindingContext ctx
       dVal <-
         holdDyn val $
         fmapMaybe
@@ -430,7 +438,8 @@ lamNode (SomeID i) graph =
           [ i :=>
               ComposeMaybe (Just $ LamInfo ctx i1 i2 (pure mempty))
           , i1 :=>
-              ComposeMaybe (Just $ BindingInfo (ctx { _ctxParent = Just (SomeID i) }) (pure "x"))
+              ComposeMaybe
+              (Just $ BindingInfo (BindingContext i (_ctxLocalScope ctx)) (pure "x"))
           , i2 :=>
               ComposeMaybe (Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) })
           ]
@@ -523,7 +532,7 @@ nextLeaf graph = starting
         leafOrBranch =
           case node of
             HoleInfo ctx -> Left ctx
-            BindingInfo ctx _ -> Left ctx
+            BindingInfo ctx _ -> Left $ toContext ctx
             VarInfo ctx _ _ -> Left ctx
             LamInfo _ i' _ _ -> Right $ SomeID i'
             AppInfo _ i' _ _ -> Right $ SomeID i'
@@ -568,7 +577,7 @@ prevLeaf graph = starting
         leafOrBranch =
           case node of
             HoleInfo ctx -> Left ctx
-            BindingInfo ctx _ -> Left ctx
+            BindingInfo ctx _ -> Left $ toContext ctx
             VarInfo ctx _ _ -> Left ctx
             LamInfo _ _ i' _ -> Right $ SomeID i'
             AppInfo _ _ i' _ -> Right $ SomeID i'

@@ -72,12 +72,21 @@ data Context f
   , _ctxLocalScope :: f (Map Binding (ID Binding))
   }
 
+data BindingContext f
+  = BindingContext
+  { _bctxParent :: ID Expr
+  , _bctxLocalScope :: f (Map Binding (ID Binding))
+  }
+
+toContext :: BindingContext f -> Context f
+toContext (BindingContext a b) = Context (Just $ SomeID a) b
+
 emptyContext :: Applicative f => Context f
 emptyContext = Context Nothing (pure mempty)
 
 data NodeInfo f a where
   BindingInfo ::
-    Context f ->
+    BindingContext f ->
     f String ->
     NodeInfo f Binding
 
@@ -116,7 +125,7 @@ deriving instance Ord (NodeInfo a)
 context :: NodeInfo f a -> Context f
 context ni =
   case ni of
-    BindingInfo c _ -> c
+    BindingInfo c _ -> toContext c
     HoleInfo c -> c
     VarInfo c _ _ -> c
     AppInfo c _ _ _ -> c
@@ -145,14 +154,16 @@ instance ShowTag ID NodeInfo where
 -}
 
 class Unbuild a where
+  type Ctx a :: (* -> *) -> *
   unbuild ::
     Applicative f =>
     DMap ID (NodeInfo f) ->
-    Context f ->
+    Ctx a f ->
     a ->
     (ID a, DMap ID (NodeInfo f), f (Set (ID Expr)))
 
 instance Unbuild Binding where
+  type Ctx Binding = BindingContext
   unbuild m ctx (Binding a) =
     let
       i' = (ID_Binding $ DMap.size m)
@@ -160,6 +171,7 @@ instance Unbuild Binding where
       (i', DMap.insert i' (BindingInfo ctx $ pure a) m, pure mempty)
 
 instance Unbuild Expr where
+  type Ctx Expr = Context
   unbuild m ctx (Var a) =
     let
       i' = ID_Expr $ DMap.size m
@@ -184,7 +196,7 @@ instance Unbuild Expr where
       (i', DMap.insert i' (AppInfo ctx a' b' fvs''') m'', fvs''')
   unbuild m ctx (Lam a b) =
     let
-      (a', m', _) = unbuild m (ctx { _ctxParent = Just $ SomeID i'}) a
+      (a', m', _) = unbuild m (BindingContext { _bctxParent = i', _bctxLocalScope = _ctxLocalScope ctx }) a
       (b', m'', fvs') = unbuild m' (Context (Just $ SomeID i') (Map.insert a a' <$> _ctxLocalScope ctx)) b
       i' = (ID_Expr $ DMap.size m'')
       fvs'' = (\bbs ffs -> ffs \\ Set.fromList bbs) <$> getBounds m'' a' <*> fvs'
