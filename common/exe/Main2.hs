@@ -145,15 +145,15 @@ mkDynamicContext ::
   (Reflex t, MonadHold t m) =>
   Context Identity ->
   m (Context (Dynamic t))
-mkDynamicContext (Context p (Identity sc)) = do
-  pure $ Context p (pure sc)
+mkDynamicContext (Context p (Identity sc) n) = do
+  pure $ Context p (pure sc) n
 
 mkDynamicBindingContext ::
   (Reflex t, MonadHold t m) =>
   BindingContext Identity ->
   m (BindingContext (Dynamic t))
-mkDynamicBindingContext (BindingContext p (Identity sc)) = do
-  pure $ BindingContext p (pure sc)
+mkDynamicBindingContext (BindingContext p (Identity sc) n) = do
+  pure $ BindingContext p (pure sc) n
 
 data Action a where
   EditBinding :: Action Binding
@@ -291,10 +291,11 @@ renderID ::
   ID a ->
   m (Dynamic t (Maybe NodeSort))
 renderID dGraph dDecos eActions i = do
-  dm_node <- lookupIncremental dGraph i
+  dm_dNode <- lookupIncremental dGraph i
+  let dm_nodeSort = dm_dNode >>= maybe (pure Nothing) (fmap (Just . nodeSort))
   bIsLeaf <-
     fmap current . holdUniqDyn $
-    dm_node >>= maybe (pure False) (fmap isLeaf)
+    dm_dNode >>= maybe (pure False) (fmap isLeaf)
   let dStyle = maybe mempty decoStyle . Map.lookup (SomeID i) <$> dDecos
   let
     dAttrs =
@@ -307,14 +308,48 @@ renderID dGraph dDecos eActions i = do
     maybe
       (text "NOT FOUND")
       (dyn_ . fmap (renderNode dGraph dDecos eActions i)) <$>
-    dm_node
+    dm_dNode
   eContextMenu <- contextMenu theSpan
   tellContextMenu $ (\(x, y) -> (SomeID i, x, y)) <$> eContextMenu
   let eEnter :: Event t () = domEvent Mouseenter theSpan
   let eLeave :: Event t () = domEvent Mouseleave theSpan
   tellDecos $ MonoidalMap.singleton (SomeID i) info <$ gate bIsLeaf eEnter
   tellDecos $ MonoidalMap.singleton (SomeID i) uninfo <$ gate bIsLeaf eLeave
-  pure $ dm_node >>= maybe (pure Nothing) (fmap (Just . nodeSort))
+
+  tellDecos =<< switchHold never =<< dyn (do
+    m_dNode <- dm_dNode
+    case m_dNode of
+      Just dNode -> do
+        node <- dNode
+        pure $ case node of
+          VarInfo _ dVal _ -> do
+            initial <- sample $ currentIncremental dGraph
+            dm_binder <-
+              foldDyn
+                (DMap.foldrWithKey _ Nothing initial)
+                (\old new -> _)
+                (updatedIncremental dGraph)
+            pure $ _ <$ eLeave
+          _ -> pure never
+      _ -> pure $ pure never)
+  tellDecos =<< switchHold never =<< dyn (do
+    m_dNode <- dm_dNode
+    case m_dNode of
+      Just dNode -> do
+        node <- dNode
+        pure $ case node of
+          VarInfo _ dVal _ -> do
+            initial <- sample $ currentIncremental dGraph
+            dm_binder <-
+              foldDyn
+                (DMap.foldrWithKey _ Nothing initial)
+                (\old new -> _)
+                (updatedIncremental dGraph)
+            pure $ _ <$ eLeave
+          _ -> pure never
+      _ -> pure $ pure never)
+
+  pure dm_nodeSort
 
 renderNode ::
   ( DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m
@@ -439,7 +474,10 @@ lamNode (SomeID i) graph =
               ComposeMaybe (Just $ LamInfo ctx i1 i2 (pure mempty))
           , i1 :=>
               ComposeMaybe
-              (Just $ BindingInfo (BindingContext i (_ctxLocalScope ctx)) (pure "x"))
+              (Just $
+               BindingInfo
+                 (BindingContext i (_ctxLocalScope ctx) (_ctxLambdaRank ctx + 1))
+                 (pure "x"))
           , i2 :=>
               ComposeMaybe (Just $ HoleInfo $ ctx { _ctxParent = Just (SomeID i) })
           ]

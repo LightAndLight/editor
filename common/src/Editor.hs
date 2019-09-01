@@ -70,19 +70,21 @@ data Context f
   = Context
   { _ctxParent :: Maybe SomeID
   , _ctxLocalScope :: f (Map Binding (ID Binding))
+  , _ctxLambdaRank :: Int
   }
 
 data BindingContext f
   = BindingContext
   { _bctxParent :: ID Expr
   , _bctxLocalScope :: f (Map Binding (ID Binding))
+  , _bctxLambdaRank :: Int
   }
 
 toContext :: BindingContext f -> Context f
-toContext (BindingContext a b) = Context (Just $ SomeID a) b
+toContext (BindingContext a b c) = Context (Just $ SomeID a) b c
 
 emptyContext :: Applicative f => Context f
-emptyContext = Context Nothing (pure mempty)
+emptyContext = Context Nothing (pure mempty) 0
 
 data NodeInfo f a where
   BindingInfo ::
@@ -196,8 +198,23 @@ instance Unbuild Expr where
       (i', DMap.insert i' (AppInfo ctx a' b' fvs''') m'', fvs''')
   unbuild m ctx (Lam a b) =
     let
-      (a', m', _) = unbuild m (BindingContext { _bctxParent = i', _bctxLocalScope = _ctxLocalScope ctx }) a
-      (b', m'', fvs') = unbuild m' (Context (Just $ SomeID i') (Map.insert a a' <$> _ctxLocalScope ctx)) b
+      (a', m', _) =
+        unbuild
+          m
+          (BindingContext
+           { _bctxParent = i'
+           , _bctxLocalScope = _ctxLocalScope ctx
+           , _bctxLambdaRank = _ctxLambdaRank ctx + 1
+           })
+          a
+      (b', m'', fvs') =
+        unbuild
+          m'
+          (Context
+             (Just $ SomeID i')
+             (Map.insert a a' <$> _ctxLocalScope ctx)
+             (_ctxLambdaRank ctx + 1))
+          b
       i' = (ID_Expr $ DMap.size m'')
       fvs'' = (\bbs ffs -> ffs \\ Set.fromList bbs) <$> getBounds m'' a' <*> fvs'
     in
