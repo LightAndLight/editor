@@ -23,6 +23,8 @@ library
                      , dependent-sum
                      , dependent-sum-template
                      , deriving-compat
+                     , ghcjs-dom
+                     , jsaddle
                      , reflex ^>=0.6
                      , reflex-dom
   ghc-options:         -Wall -Werror
