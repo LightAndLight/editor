@@ -22,32 +22,32 @@ data Expr
   | App Expr Expr
   deriving (Eq, Show)
 
-data PathPiece a where
-  LamName :: PathPiece String
-  LamBody :: PathPiece Expr
-  AppLeft :: PathPiece Expr
-  AppRight :: PathPiece Expr
-deriving instance Show (PathPiece a)
+data PathPiece t a b where
+  LamName :: PathPiece t (ExprD t) String
+  LamBody :: PathPiece t (ExprD t) (ExprD t)
+  AppLeft :: PathPiece t (ExprD t) (ExprD t)
+  AppRight :: PathPiece t (ExprD t) (ExprD t)
+deriving instance Show (PathPiece t a b)
 
-data Path a b where
-  Nil :: Path a a
-  Cons :: PathPiece a -> Path a b -> Path Expr b
+data Path t a b where
+  Nil :: Path t a a
+  Cons :: PathPiece t a b -> Path t b c -> Path t a c
 
-showPath :: Path a b -> String
+showPath :: Path t a b -> String
 showPath Nil = "<empty path>"
 showPath (Cons a Nil) = show a
 showPath (Cons a b) = show a ++ " > " ++ showPath b
 
-data Edit a where
-  EditAt :: Path a b -> b -> Edit a
-  DeleteAt :: Path a b -> Edit a
+data Edit t a where
+  EditAt :: Path t a b -> b -> Edit t a
+  DeleteAt :: Path t a b -> Edit t a
 
-showEdit :: Edit a -> String
+showEdit :: Edit t a -> String
 showEdit (EditAt p _) = "Edit at: " ++ showPath p
 showEdit (DeleteAt p) = "Delete at: " ++ showPath p
 
-data Focus a where
-  FocusPath :: Path a b -> Focus a
+data Focus t a where
+  FocusPath :: Path t a b -> Focus t a
 
 data ExprD t
   = VarD Int
@@ -55,30 +55,10 @@ data ExprD t
   | AppD (Dynamic t (ExprD t)) (Dynamic t (ExprD t))
   | HoleD
 
-followPathPieceD :: PathPiece a -> ExprD t -> Maybe (Dynamic t a)
-followPathPieceD pp ex =
-  case pp of
-    LamName ->
-      case ex of
-        LamD a _ -> Just a
-        _ -> Nothing
-    LamBody ->
-      case ex of
-        LamD _ a -> Just a
-        _ -> Nothing
-    AppLeft ->
-      case ex of
-        AppD a _ -> Just a
-        _ -> Nothing
-    AppRight ->
-      case ex of
-        AppD _ a -> Just a
-        _ -> Nothing
-
 holdExprInner ::
   (Reflex t, MonadHold t m, Adjustable t m) =>
   Expr ->
-  Event t (Edit Expr) ->
+  Event t (Edit t (ExprD t)) ->
   m (ExprD t)
 holdExprInner initial eEdit =
   case initial of
@@ -123,14 +103,14 @@ holdExprInner initial eEdit =
 holdExprM ::
   (Reflex t, MonadHold t m, Adjustable t m) =>
   m (ExprD t) ->
-  Event t (Edit Expr) ->
+  Event t (Edit t (ExprD t)) ->
   m (Dynamic t (ExprD t))
 holdExprM initialM eEdit =
   networkHold
     initialM
     (fmapMaybe
         (\case
-            EditAt Nil a -> Just $ holdExprInner a eEdit
+            EditAt Nil a -> Just $ pure a
             DeleteAt Nil -> Just $ pure HoleD
             _ -> Nothing)
         eEdit)
@@ -138,32 +118,54 @@ holdExprM initialM eEdit =
 holdExpr ::
   (Reflex t, MonadHold t m, Adjustable t m) =>
   Expr ->
-  Event t (Edit Expr) ->
+  Event t (Edit t (ExprD t)) ->
   m (Dynamic t (ExprD t))
 holdExpr initial eEdit = holdExprM (holdExprInner initial eEdit) eEdit
 
-upFocus :: Focus a -> Maybe (Focus a)
+upFocus :: Focus t a -> Maybe (Focus t a)
 upFocus (FocusPath Nil) = Nothing
 upFocus (FocusPath (Cons _ Nil)) = Just $ FocusPath Nil
 upFocus (FocusPath (Cons a rest)) = do
   FocusPath rest' <- upFocus $ FocusPath rest
   pure $ FocusPath (Cons a rest')
 
-downFocus :: MonadSample t m => ExprD t -> Focus a -> m (Maybe (Focus a))
+downFocus
+  :: (Reflex t, MonadSample t m)
+  => ExprD t
+  -> Focus t (ExprD t)
+  -> m (Maybe (Focus t (ExprD t)))
 downFocus ex (FocusPath Nil) =
   case ex of
     VarD{} -> pure Nothing
+    HoleD{} -> pure Nothing
     AppD{} -> pure . Just $ FocusPath (Cons AppLeft Nil)
     LamD{} -> pure . Just $ FocusPath (Cons LamBody Nil)
 downFocus ex (FocusPath (Cons a rest)) = do
-  case followPathPieceD a ex of
-    Nothing -> pure Nothing
-    Just dEx' -> do
-      ex' <- sample $ current dEx'
-      m_rest' <- downFocus ex' $ FocusPath rest
-      case m_rest' of
-        Nothing -> pure Nothing
-        Just (FocusPath rest') -> pure . Just $ FocusPath (Cons a rest')
+  m_rest' <-
+    case a of
+      LamName -> pure Nothing
+      LamBody ->
+        case ex of
+          LamD _ b -> do
+            ex' <- sample (current b)
+            downFocus ex' (FocusPath rest)
+          _ -> pure Nothing
+      AppLeft ->
+        case ex of
+          AppD b _ -> do
+            ex' <- sample (current b)
+            downFocus ex' (FocusPath rest)
+          _ -> pure Nothing
+      AppRight ->
+        case ex of
+          AppD _ b -> do
+            ex' <- sample (current b)
+            downFocus ex' (FocusPath rest)
+          _ -> pure Nothing
+  pure $
+    case m_rest' of
+      Nothing -> Nothing
+      Just (FocusPath rest') -> Just $ FocusPath (Cons a rest')
 
 changeFocus ::
   ( Reflex t
@@ -172,20 +174,34 @@ changeFocus ::
   , HasDocument m
   , MonadJSM m
   ) =>
-  Dynamic t (Focus a) ->
-  m (Event t (Focus a))
-changeFocus dFocus = do
+  Dynamic t (Focus t (ExprD t)) ->
+  Dynamic t (ExprD t) ->
+  m (Event t (Focus t (ExprD t)))
+changeFocus dFocus dExpr = do
   doc <- askDocument
   eK_key <-
     wrapDomEventMaybe
       doc
       (`EventM.on` Events.keyDown)
       (fmap (\c -> guard $ c == 75) getKeyEvent)
+  eJ_key <-
+    wrapDomEventMaybe
+      doc
+      (`EventM.on` Events.keyDown)
+      (fmap (\c -> guard $ c == 74) getKeyEvent)
   pure $
-    attachWithMaybe
-      (\focus _ -> upFocus focus)
-      (current dFocus)
-      eK_key
+    leftmost
+    [ attachWithMaybe
+        (\focus _ -> upFocus focus)
+        (current dFocus)
+        eK_key
+    , push
+      (\_ -> do
+          expr <- sample $ current dExpr
+          focus <- sample $ current dFocus
+          downFocus expr focus)
+      eJ_key
+    ]
 
 
 holdFocus ::
@@ -197,11 +213,12 @@ holdFocus ::
   , MonadJSM m
   , MonadFix m
   ) =>
-  Focus a ->
-  m (Dynamic t (Focus a))
-holdFocus initial = do
+  Focus t (ExprD t) ->
+  Dynamic t (ExprD t) ->
+  m (Dynamic t (Focus t (ExprD t)))
+holdFocus initial dExpr = do
   rec
-    eChange <- changeFocus dFocus
+    eChange <- changeFocus dFocus dExpr
     dFocus <- holdDyn initial eChange
   pure dFocus
 
@@ -212,8 +229,8 @@ deleteEvent ::
   , HasDocument m
   , MonadJSM m
   ) =>
-  Dynamic t (Focus Expr) ->
-  m (Event t (Edit Expr))
+  Dynamic t (Focus t (ExprD t)) ->
+  m (Event t (Edit t (ExprD t)))
 deleteEvent dFocus = do
   doc <- askDocument
   eDeleteKey <-
@@ -227,17 +244,17 @@ deleteEvent dFocus = do
 viewExprD ::
   forall t m.
   (DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m) =>
-  Dynamic t (Focus Expr) ->
+  Dynamic t (Focus t (ExprD t)) ->
   Dynamic t (ExprD t) ->
-  m (Event t (Edit Expr))
+  m (Event t (Edit t (ExprD t)))
 viewExprD df dExpr = do
   switchHold never =<< dyn (go id (Just <$> df) <$> dExpr)
   where
     go ::
-      (Path Expr Expr -> Path Expr Expr) ->
-      Dynamic t (Maybe (Focus Expr)) ->
+      (Path t (ExprD t) (ExprD t) -> Path t (ExprD t) (ExprD t)) ->
+      Dynamic t (Maybe (Focus t (ExprD t))) ->
       ExprD t ->
-      m (Event t (Edit Expr))
+      m (Event t (Edit t (ExprD t)))
     go path dFocus expr = do
       dIsFocused <- holdUniqDyn $ (\case; Just (FocusPath Nil) -> True; _ -> False) <$> dFocus
       let dAttrs = (\b -> if b then "style" =: "background-color: gray;" else mempty) <$> dIsFocused
