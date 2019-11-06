@@ -41,6 +41,7 @@ showPath (Cons a b) = show a ++ " > " ++ showPath b
 
 data EditAction
   = InsertLambda
+  | InsertApp
   | DeleteExpr
 
 data Edit t a where
@@ -50,6 +51,7 @@ showEdit :: Edit t a -> String
 showEdit (EditAt p act) =
   (case act of
      InsertLambda -> "insert lambda"
+     InsertApp -> "insert app"
      DeleteExpr -> "delete") ++
   " at: " ++
   showPath p
@@ -119,6 +121,10 @@ holdExprM initialM eEdit = do
                        case expr of
                          HoleD -> Just $ holdExprInner (Lam "" Hole) eEdit
                          _ -> Nothing
+                     InsertApp ->
+                       case expr of
+                         HoleD -> Just $ holdExprInner (App Hole Hole) eEdit
+                         _ -> Nothing
                  _ -> Nothing)
             (current dExpr)
             eEdit)
@@ -176,24 +182,6 @@ downFocus ex (FocusPath (Cons a rest)) = do
       Nothing -> Nothing
       Just (FocusPath rest') -> Just $ FocusPath (Cons a rest')
 
-insertLambda ::
-  ( Reflex t
-  , DomBuilderSpace m ~ GhcjsDomSpace
-  , TriggerEvent t m
-  , HasDocument m
-  , MonadJSM m
-  ) =>
-  Dynamic t (Focus t (ExprD t)) ->
-  m (Event t (Edit t (ExprD t)))
-insertLambda dFocus = do
-  doc <- askDocument
-  eBackslash_key <-
-    wrapDomEventMaybe
-      doc
-      (`EventM.on` Events.keyDown)
-      (fmap (\c -> guard $ c == 220) getKeyEvent)
-  pure $ (\(FocusPath p) -> EditAt p InsertLambda) <$> current dFocus <@ eBackslash_key
-
 changeFocus ::
   ( Reflex t
   , DomBuilderSpace m ~ GhcjsDomSpace
@@ -249,6 +237,42 @@ holdFocus initial dExpr = do
     dFocus <- holdDyn initial eChange
   pure dFocus
 
+insertLambda ::
+  ( Reflex t
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , TriggerEvent t m
+  , HasDocument m
+  , MonadJSM m
+  ) =>
+  Dynamic t (Focus t (ExprD t)) ->
+  m (Event t (Edit t (ExprD t)))
+insertLambda dFocus = do
+  doc <- askDocument
+  eBackslash_key <-
+    wrapDomEventMaybe
+      doc
+      (`EventM.on` Events.keyDown)
+      (fmap (\c -> guard $ c == 220) getKeyEvent)
+  pure $ (\(FocusPath p) -> EditAt p InsertLambda) <$> current dFocus <@ eBackslash_key
+
+insertApp ::
+  ( Reflex t
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , TriggerEvent t m
+  , HasDocument m
+  , MonadJSM m
+  ) =>
+  Dynamic t (Focus t (ExprD t)) ->
+  m (Event t (Edit t (ExprD t)))
+insertApp dFocus = do
+  doc <- askDocument
+  eA_key <-
+    wrapDomEventMaybe
+      doc
+      (`EventM.on` Events.keyDown)
+      (fmap (\c -> guard $ c == 65) getKeyEvent)
+  pure $ (\(FocusPath p) -> EditAt p InsertApp) <$> current dFocus <@ eA_key
+
 deleteExpr ::
   ( Reflex t
   , DomBuilderSpace m ~ GhcjsDomSpace
@@ -280,7 +304,8 @@ editEvents ::
 editEvents dFocus = do
   eDelete <- deleteExpr dFocus
   eInsertLambda <- insertLambda dFocus
-  pure $ leftmost [eDelete, eInsertLambda]
+  eInsertApp <- insertApp dFocus
+  pure $ leftmost [eDelete, eInsertLambda, eInsertApp]
 
 shouldParens ::
   ExprD t ->
