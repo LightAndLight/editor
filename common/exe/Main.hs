@@ -15,7 +15,7 @@ main :: IO ()
 main =
   mainWidgetWithHead headWidget $ do
     let ex = Lam "f" $ Lam "x" $ App (Var 1) (Var 0)
-    let dFocus = pure $ FocusPath (Cons LamBody $ Cons LamBody Nil)
+    dFocus <- holdFocus $ FocusPath (Cons LamBody $ Cons LamBody Nil)
     eDelete <- deleteEvent dFocus
     rec
       dEx <- holdExpr ex $ leftmost [eDelete, eEdit]

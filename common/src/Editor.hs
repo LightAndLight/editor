@@ -1,6 +1,7 @@
 {-# language GADTs #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
 module Editor where
@@ -45,14 +46,34 @@ showEdit :: Edit a -> String
 showEdit (EditAt p _) = "Edit at: " ++ showPath p
 showEdit (DeleteAt p) = "Delete at: " ++ showPath p
 
-data Focus where
-  FocusPath :: Path Expr a -> Focus
+data Focus a where
+  FocusPath :: Path a b -> Focus a
 
 data ExprD t
   = VarD Int
   | LamD (Dynamic t String) (Dynamic t (ExprD t))
   | AppD (Dynamic t (ExprD t)) (Dynamic t (ExprD t))
   | HoleD
+
+followPathPieceD :: PathPiece a -> ExprD t -> Maybe (Dynamic t a)
+followPathPieceD pp ex =
+  case pp of
+    LamName ->
+      case ex of
+        LamD a _ -> Just a
+        _ -> Nothing
+    LamBody ->
+      case ex of
+        LamD _ a -> Just a
+        _ -> Nothing
+    AppLeft ->
+      case ex of
+        AppD a _ -> Just a
+        _ -> Nothing
+    AppRight ->
+      case ex of
+        AppD _ a -> Just a
+        _ -> Nothing
 
 holdExprInner ::
   (Reflex t, MonadHold t m, Adjustable t m) =>
@@ -121,6 +142,69 @@ holdExpr ::
   m (Dynamic t (ExprD t))
 holdExpr initial eEdit = holdExprM (holdExprInner initial eEdit) eEdit
 
+upFocus :: Focus a -> Maybe (Focus a)
+upFocus (FocusPath Nil) = Nothing
+upFocus (FocusPath (Cons _ Nil)) = Just $ FocusPath Nil
+upFocus (FocusPath (Cons a rest)) = do
+  FocusPath rest' <- upFocus $ FocusPath rest
+  pure $ FocusPath (Cons a rest')
+
+downFocus :: MonadSample t m => ExprD t -> Focus a -> m (Maybe (Focus a))
+downFocus ex (FocusPath Nil) =
+  case ex of
+    VarD{} -> pure Nothing
+    AppD{} -> pure . Just $ FocusPath (Cons AppLeft Nil)
+    LamD{} -> pure . Just $ FocusPath (Cons LamBody Nil)
+downFocus ex (FocusPath (Cons a rest)) = do
+  case followPathPieceD a ex of
+    Nothing -> pure Nothing
+    Just dEx' -> do
+      ex' <- sample $ current dEx'
+      m_rest' <- downFocus ex' $ FocusPath rest
+      case m_rest' of
+        Nothing -> pure Nothing
+        Just (FocusPath rest') -> pure . Just $ FocusPath (Cons a rest')
+
+changeFocus ::
+  ( Reflex t
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , TriggerEvent t m
+  , HasDocument m
+  , MonadJSM m
+  ) =>
+  Dynamic t (Focus a) ->
+  m (Event t (Focus a))
+changeFocus dFocus = do
+  doc <- askDocument
+  eK_key <-
+    wrapDomEventMaybe
+      doc
+      (`EventM.on` Events.keyDown)
+      (fmap (\c -> guard $ c == 75) getKeyEvent)
+  pure $
+    attachWithMaybe
+      (\focus _ -> upFocus focus)
+      (current dFocus)
+      eK_key
+
+
+holdFocus ::
+  ( Reflex t
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , MonadHold t m
+  , TriggerEvent t m
+  , HasDocument m
+  , MonadJSM m
+  , MonadFix m
+  ) =>
+  Focus a ->
+  m (Dynamic t (Focus a))
+holdFocus initial = do
+  rec
+    eChange <- changeFocus dFocus
+    dFocus <- holdDyn initial eChange
+  pure dFocus
+
 deleteEvent ::
   ( Reflex t
   , DomBuilderSpace m ~ GhcjsDomSpace
@@ -128,19 +212,22 @@ deleteEvent ::
   , HasDocument m
   , MonadJSM m
   ) =>
-  Dynamic t Focus ->
+  Dynamic t (Focus Expr) ->
   m (Event t (Edit Expr))
 deleteEvent dFocus = do
   doc <- askDocument
   eDeleteKey <-
-    wrapDomEventMaybe doc (`EventM.on` Events.keyDown) $ (\c -> guard $ c == 46) <$> getKeyEvent
+    wrapDomEventMaybe
+      doc
+      (`EventM.on` Events.keyDown)
+      (fmap (\c -> guard $ c == 46) getKeyEvent)
   pure $ (\(FocusPath p) -> DeleteAt p) <$> current dFocus <@ eDeleteKey
 
 
 viewExprD ::
   forall t m.
   (DomBuilder t m, PostBuild t m, MonadHold t m, MonadFix m) =>
-  Dynamic t Focus ->
+  Dynamic t (Focus Expr) ->
   Dynamic t (ExprD t) ->
   m (Event t (Edit Expr))
 viewExprD df dExpr = do
@@ -148,7 +235,7 @@ viewExprD df dExpr = do
   where
     go ::
       (Path Expr Expr -> Path Expr Expr) ->
-      Dynamic t (Maybe Focus) ->
+      Dynamic t (Maybe (Focus Expr)) ->
       ExprD t ->
       m (Event t (Edit Expr))
     go path dFocus expr = do
