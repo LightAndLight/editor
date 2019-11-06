@@ -282,6 +282,26 @@ editEvents dFocus = do
   eInsertLambda <- insertLambda dFocus
   pure $ leftmost [eDelete, eInsertLambda]
 
+shouldParens ::
+  ExprD t ->
+  ExprD t ->
+  Bool
+shouldParens parent child =
+  case (parent, child) of
+    (AppD{}, AppD{}) -> True
+    (AppD{}, LamD{}) -> True
+    _ -> False
+
+parens ::
+  (DomBuilder t m, PostBuild t m) =>
+  Dynamic t Bool ->
+  m a ->
+  m a
+parens dShould m = do
+  dyn_ $ (\should -> when should $ text "(") <$> dShould
+  a <- m
+  dyn_ $ (\should -> when should $ text ")") <$> dShould
+  pure a
 
 viewExprD ::
   forall t m.
@@ -290,18 +310,20 @@ viewExprD ::
   Dynamic t (ExprD t) ->
   m (Event t (Edit t (ExprD t)))
 viewExprD df dExpr = do
-  switchHold never =<< dyn (go id (Just <$> df) <$> dExpr)
+  switchHold never =<< dyn (go id (pure False) (Just <$> df) <$> dExpr)
   where
     go ::
       (Path t (ExprD t) (ExprD t) -> Path t (ExprD t) (ExprD t)) ->
+      Dynamic t Bool ->
       Dynamic t (Maybe (Focus t (ExprD t))) ->
       ExprD t ->
       m (Event t (Edit t (ExprD t)))
-    go path dFocus expr = do
+    go path dShouldParens dFocus expr = do
       dIsFocused <- holdUniqDyn $ (\case; Just (FocusPath Nil) -> True; _ -> False) <$> dFocus
       let dAttrs = (\b -> if b then "style" =: "background-color: gray;" else mempty) <$> dIsFocused
       (_, e1) <-
-        elDynAttr' "span" dAttrs $
+        elDynAttr' "span" dAttrs .
+        parens dShouldParens $
           case expr of
             VarD n -> do
               text . fromString . ('#' :) $ show n
@@ -314,7 +336,7 @@ viewExprD df dExpr = do
                       Just (FocusPath (Cons LamBody rest)) -> Just (FocusPath rest)
                       _ -> Nothing) <$>
                   dFocus
-              switchHold never =<< dyn (go (path . Cons LamBody) dFocus' <$> b)
+              switchHold never =<< dyn (go (path . Cons LamBody) (pure False) dFocus' <$> b)
             AppD a b -> do
               let
                 dFocus' =
@@ -322,7 +344,10 @@ viewExprD df dExpr = do
                       Just (FocusPath (Cons AppLeft rest)) -> Just (FocusPath rest)
                       _ -> Nothing) <$>
                   dFocus
-              e1 <- switchHold never =<< dyn (go (path . Cons AppLeft) dFocus' <$> a)
+              shouldParensLeft <- holdUniqDyn $ shouldParens expr <$> a
+              e1 <-
+                switchHold never =<<
+                dyn (go (path . Cons AppLeft) shouldParensLeft dFocus' <$> a)
               text " "
               let
                 dFocus'' =
@@ -330,7 +355,8 @@ viewExprD df dExpr = do
                       Just (FocusPath (Cons AppRight rest)) -> Just (FocusPath rest)
                       _ -> Nothing) <$>
                   dFocus
-              e2 <- switchHold never =<< dyn (go (path . Cons AppRight) dFocus'' <$> b)
+              shouldParensRight <- holdUniqDyn $ shouldParens expr <$> b
+              e2 <- switchHold never =<< dyn (go (path . Cons AppRight) shouldParensRight dFocus'' <$> b)
               pure $ leftmost [e1, e2]
             HoleD -> do
               text "_"
