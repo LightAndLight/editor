@@ -182,6 +182,38 @@ downFocus ex (FocusPath (Cons a rest)) = do
       Nothing -> Nothing
       Just (FocusPath rest') -> Just $ FocusPath (Cons a rest')
 
+findHole ::
+  forall t m.
+  (Reflex t, MonadSample t m) =>
+  ExprD t ->
+  m (Maybe (Path t (ExprD t) (ExprD t)))
+findHole = go id
+  where
+    go ::
+      (Path t (ExprD t) (ExprD t) -> Path t (ExprD t) (ExprD t)) ->
+      ExprD t ->
+      m (Maybe (Path t (ExprD t) (ExprD t)))
+    go path expr =
+      case expr of
+        VarD{} -> pure Nothing
+        HoleD -> pure . Just $ path Nil
+        LamD _ a -> go (path . Cons LamBody) =<< sample (current a)
+        AppD a b -> do
+          m_p <- go (path . Cons AppLeft) =<< sample (current a)
+          case m_p of
+            Nothing -> go (path . Cons AppRight) =<< sample (current b)
+            Just p -> pure $ Just p
+
+{-
+nextHoleFocus
+  :: (Reflex t, MonadSample t m)
+  => ExprD t
+  -> Focus t (ExprD t)
+  -> m (Maybe (Focus t (ExprD t)))
+nextHoleFocus expr (FocusPath Nil) = _
+nextHoleFocus expr (FocusPath (Cons a rest)) = _
+-}
+
 changeFocus ::
   ( Reflex t
   , DomBuilderSpace m ~ GhcjsDomSpace
