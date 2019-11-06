@@ -18,7 +18,7 @@ main =
     let focus = FocusPath (Cons LamBody $ Cons LamBody Nil)
     rec
       dFocus <- holdFocus focus dExpr
-      eDelete <- deleteEvent dFocus
-      dExpr <- holdExpr ex $ leftmost [eDelete, eEdit]
-      eEdit <- viewExprD dFocus dExpr
+      eEdit1 <- editEvents dFocus
+      dExpr <- holdExpr ex $ leftmost [eEdit1, eEdit2]
+      eEdit2 <- viewExprD dFocus dExpr
     pure ()

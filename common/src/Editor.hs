@@ -20,6 +20,7 @@ data Expr
   = Var Int
   | Lam String Expr
   | App Expr Expr
+  | Hole
   deriving (Eq, Show)
 
 data PathPiece t a b where
@@ -38,13 +39,20 @@ showPath Nil = "<empty path>"
 showPath (Cons a Nil) = show a
 showPath (Cons a b) = show a ++ " > " ++ showPath b
 
+data EditAction
+  = InsertLambda
+  | DeleteExpr
+
 data Edit t a where
-  EditAt :: Path t a b -> b -> Edit t a
-  DeleteAt :: Path t a b -> Edit t a
+  EditAt :: Path t a b -> EditAction -> Edit t a
 
 showEdit :: Edit t a -> String
-showEdit (EditAt p _) = "Edit at: " ++ showPath p
-showEdit (DeleteAt p) = "Delete at: " ++ showPath p
+showEdit (EditAt p act) =
+  (case act of
+     InsertLambda -> "insert lambda"
+     DeleteExpr -> "delete") ++
+  " at: " ++
+  showPath p
 
 data Focus t a where
   FocusPath :: Path t a b -> Focus t a
@@ -56,67 +64,68 @@ data ExprD t
   | HoleD
 
 holdExprInner ::
-  (Reflex t, MonadHold t m, Adjustable t m) =>
+  (Reflex t, MonadHold t m, Adjustable t m, MonadFix m) =>
   Expr ->
   Event t (Edit t (ExprD t)) ->
   m (ExprD t)
 holdExprInner initial eEdit =
   case initial of
+    Hole -> pure HoleD
     Var n ->
         pure $ VarD n
     Lam n b ->
-      LamD <$>
-          (holdDyn
-            n
-            (fmapMaybe
-               (\case
-                   EditAt (Cons LamName Nil) n' -> Just n'
-                   _ -> Nothing)
-               eEdit)) <*>
-        (holdExpr
-            b
-            (fmapMaybe
-               (\case
-                   EditAt (Cons LamBody rest) e -> Just $ EditAt rest e
-                   DeleteAt (Cons LamBody rest) -> Just $ DeleteAt rest
-                   _ -> Nothing)
-               eEdit))
+      LamD (pure n) <$>
+      holdExpr
+        b
+        (fmapMaybe
+            (\case
+                EditAt (Cons LamBody rest) act -> Just $ EditAt rest act
+                _ -> Nothing)
+            eEdit)
     App a b ->
       AppD <$>
-        (holdExpr
-          a
-          (fmapMaybe
-             (\case
-                 EditAt (Cons AppLeft rest) e -> Just $ EditAt rest e
-                 DeleteAt (Cons AppLeft rest) -> Just $ DeleteAt rest
-                 _ -> Nothing)
-             eEdit)) <*>
-        (holdExpr
-          b
-          (fmapMaybe
-             (\case
-                 EditAt (Cons AppRight rest) e -> Just $ EditAt rest e
-                 DeleteAt (Cons AppRight rest) -> Just $ DeleteAt rest
-                 _ -> Nothing)
-             eEdit))
+      holdExpr
+        a
+        (fmapMaybe
+            (\case
+                EditAt (Cons AppLeft rest) act -> Just $ EditAt rest act
+                _ -> Nothing)
+            eEdit) <*>
+      holdExpr
+        b
+        (fmapMaybe
+            (\case
+                EditAt (Cons AppRight rest) act -> Just $ EditAt rest act
+                _ -> Nothing)
+            eEdit)
 
 holdExprM ::
-  (Reflex t, MonadHold t m, Adjustable t m) =>
+  (Reflex t, MonadHold t m, Adjustable t m, MonadFix m) =>
   m (ExprD t) ->
   Event t (Edit t (ExprD t)) ->
   m (Dynamic t (ExprD t))
-holdExprM initialM eEdit =
-  networkHold
-    initialM
-    (fmapMaybe
-        (\case
-            EditAt Nil a -> Just $ pure a
-            DeleteAt Nil -> Just $ pure HoleD
-            _ -> Nothing)
-        eEdit)
+holdExprM initialM eEdit = do
+  rec
+    dExpr <-
+      networkHold
+        initialM
+        (attachWithMaybe
+            (\expr (EditAt path act) ->
+               case path of
+                 Nil ->
+                   case act of
+                     DeleteExpr -> Just $ pure HoleD
+                     InsertLambda ->
+                       case expr of
+                         HoleD -> Just $ holdExprInner (Lam "" Hole) eEdit
+                         _ -> Nothing
+                 _ -> Nothing)
+            (current dExpr)
+            eEdit)
+  pure dExpr
 
 holdExpr ::
-  (Reflex t, MonadHold t m, Adjustable t m) =>
+  (Reflex t, MonadHold t m, Adjustable t m, MonadFix m) =>
   Expr ->
   Event t (Edit t (ExprD t)) ->
   m (Dynamic t (ExprD t))
@@ -166,6 +175,24 @@ downFocus ex (FocusPath (Cons a rest)) = do
     case m_rest' of
       Nothing -> Nothing
       Just (FocusPath rest') -> Just $ FocusPath (Cons a rest')
+
+insertLambda ::
+  ( Reflex t
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , TriggerEvent t m
+  , HasDocument m
+  , MonadJSM m
+  ) =>
+  Dynamic t (Focus t (ExprD t)) ->
+  m (Event t (Edit t (ExprD t)))
+insertLambda dFocus = do
+  doc <- askDocument
+  eBackslash_key <-
+    wrapDomEventMaybe
+      doc
+      (`EventM.on` Events.keyDown)
+      (fmap (\c -> guard $ c == 220) getKeyEvent)
+  pure $ (\(FocusPath p) -> EditAt p InsertLambda) <$> current dFocus <@ eBackslash_key
 
 changeFocus ::
   ( Reflex t
@@ -222,7 +249,7 @@ holdFocus initial dExpr = do
     dFocus <- holdDyn initial eChange
   pure dFocus
 
-deleteEvent ::
+deleteExpr ::
   ( Reflex t
   , DomBuilderSpace m ~ GhcjsDomSpace
   , TriggerEvent t m
@@ -231,14 +258,29 @@ deleteEvent ::
   ) =>
   Dynamic t (Focus t (ExprD t)) ->
   m (Event t (Edit t (ExprD t)))
-deleteEvent dFocus = do
+deleteExpr dFocus = do
   doc <- askDocument
   eDeleteKey <-
     wrapDomEventMaybe
       doc
       (`EventM.on` Events.keyDown)
       (fmap (\c -> guard $ c == 46) getKeyEvent)
-  pure $ (\(FocusPath p) -> DeleteAt p) <$> current dFocus <@ eDeleteKey
+  pure $ (\(FocusPath p) -> EditAt p DeleteExpr) <$> current dFocus <@ eDeleteKey
+
+
+editEvents ::
+  ( Reflex t
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , TriggerEvent t m
+  , HasDocument m
+  , MonadJSM m
+  ) =>
+  Dynamic t (Focus t (ExprD t)) ->
+  m (Event t (Edit t (ExprD t)))
+editEvents dFocus = do
+  eDelete <- deleteExpr dFocus
+  eInsertLambda <- insertLambda dFocus
+  pure $ leftmost [eDelete, eInsertLambda]
 
 
 viewExprD ::
