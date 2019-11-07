@@ -1,13 +1,19 @@
+{-# language FlexibleInstances, MultiParamTypeClasses, UndecidableInstances #-}
 {-# language GADTs #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
+{-# options_ghc -fno-warn-orphans #-}
 module Editor where
 
+import Control.Applicative
 import Control.Monad
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Maybe
 import Control.Monad.Fix
+import Data.Foldable
 import Data.String
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex
@@ -15,6 +21,8 @@ import Reflex.Network
 import Reflex.Dom
 import qualified GHCJS.DOM.EventM as EventM
 import qualified GHCJS.DOM.GlobalEventHandlers as Events
+
+instance MonadSample t m => MonadSample t (MaybeT m) where; sample = lift . sample
 
 data Expr
   = Var Int
@@ -33,6 +41,8 @@ deriving instance Show (PathPiece t a b)
 data Path t a b where
   Nil :: Path t a a
   Cons :: PathPiece t a b -> Path t b c -> Path t a c
+
+type DPath t a = Path t a a -> Path t a a
 
 showPath :: Path t a b -> String
 showPath Nil = "<empty path>"
@@ -186,33 +196,62 @@ findHole ::
   forall t m.
   (Reflex t, MonadSample t m) =>
   ExprD t ->
-  m (Maybe (Path t (ExprD t) (ExprD t)))
+  MaybeT m (Path t (ExprD t) (ExprD t))
 findHole = go id
   where
     go ::
-      (Path t (ExprD t) (ExprD t) -> Path t (ExprD t) (ExprD t)) ->
+      DPath t (ExprD t) ->
       ExprD t ->
-      m (Maybe (Path t (ExprD t) (ExprD t)))
+      MaybeT m (Path t (ExprD t) (ExprD t))
     go path expr =
       case expr of
-        VarD{} -> pure Nothing
-        HoleD -> pure . Just $ path Nil
+        VarD{} -> empty
+        HoleD -> pure $ path Nil
         LamD _ a -> go (path . Cons LamBody) =<< sample (current a)
-        AppD a b -> do
-          m_p <- go (path . Cons AppLeft) =<< sample (current a)
-          case m_p of
-            Nothing -> go (path . Cons AppRight) =<< sample (current b)
-            Just p -> pure $ Just p
+        AppD a b ->
+          (go (path . Cons AppLeft) =<< sample (current a)) <|>
+          (go (path . Cons AppRight) =<< sample (current b))
 
-{-
-nextHoleFocus
-  :: (Reflex t, MonadSample t m)
-  => ExprD t
-  -> Focus t (ExprD t)
-  -> m (Maybe (Focus t (ExprD t)))
-nextHoleFocus expr (FocusPath Nil) = _
-nextHoleFocus expr (FocusPath (Cons a rest)) = _
--}
+nextHoleFocus ::
+  forall t m.
+  (Reflex t, MonadSample t m) =>
+  ExprD t ->
+  Focus t (ExprD t) ->
+  m (Maybe (Focus t (ExprD t)))
+nextHoleFocus _ (FocusPath Nil) = pure Nothing
+nextHoleFocus expr focus = runMaybeT $ go [] id expr focus
+  where
+    go ::
+      [(DPath t (ExprD t), ExprD t)] ->
+      DPath t (ExprD t) ->
+      ExprD t ->
+      Focus t (ExprD t) ->
+      MaybeT m (Focus t (ExprD t))
+    go search path _ (FocusPath Nil) = do
+      path' <- asum $ (\(p, e) -> (p $) <$> findHole e) <$> search
+      pure $ FocusPath (path path')
+    go search path ee (FocusPath (Cons a rest)) =
+        case a of
+          LamName -> empty
+          LamBody ->
+            case ee of
+              LamD _ body -> do
+                body' <- sample $ current body
+                go search (path . Cons LamBody) body' (FocusPath rest)
+              _ -> empty
+          AppLeft ->
+            case ee of
+              AppD left right -> do
+                left' <- sample $ current left
+                right' <- sample $ current right
+                go ((path . Cons AppRight, right') : search) (path . Cons AppLeft) left' (FocusPath rest)
+              _ -> empty
+          AppRight ->
+            case ee of
+              AppD _ right -> do
+                right' <- sample $ current right
+                go search (path . Cons AppRight) right' (FocusPath rest)
+              _ -> empty
 
 changeFocus ::
   ( Reflex t
@@ -236,6 +275,11 @@ changeFocus dFocus dExpr = do
       doc
       (`EventM.on` Events.keyDown)
       (fmap (\c -> guard $ c == 74) getKeyEvent)
+  eN_key <-
+    wrapDomEventMaybe
+      doc
+      (`EventM.on` Events.keyDown)
+      (fmap (\c -> guard $ c == 78) getKeyEvent)
   pure $
     leftmost
     [ attachWithMaybe
@@ -246,8 +290,14 @@ changeFocus dFocus dExpr = do
       (\_ -> do
           expr <- sample $ current dExpr
           focus <- sample $ current dFocus
-          downFocus expr focus)
+          downFocus expr focus) $
       eJ_key
+    , push
+      (\_ -> do
+          expr <- sample $ current dExpr
+          focus <- sample $ current dFocus
+          nextHoleFocus expr focus) $
+      eN_key
     ]
 
 
