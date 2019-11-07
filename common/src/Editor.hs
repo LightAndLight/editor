@@ -1,3 +1,4 @@
+{-# language FlexibleContexts #-}
 {-# language FlexibleInstances, MultiParamTypeClasses, UndecidableInstances #-}
 {-# language GADTs #-}
 {-# language LambdaCase #-}
@@ -10,6 +11,7 @@ module Editor where
 
 import Control.Applicative
 import Control.Monad
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Maybe
 import Control.Monad.Fix
@@ -396,6 +398,66 @@ editEvents dFocus = do
   eInsertLambda <- insertLambda dFocus
   eInsertApp <- insertApp dFocus
   pure $ leftmost [eDelete, eInsertLambda, eInsertApp]
+
+newtype Meta = Meta Int deriving (Eq, Ord)
+
+data Type
+  = TArr Type Type
+  | TUnit
+  | TMeta Meta
+
+data TypeError
+  = TypeMismatch Type Type
+
+solveL :: MonadError TypeError m => Meta -> Type -> m ()
+solveL = _
+
+solveR :: MonadError TypeError m => Type -> Meta -> m ()
+solveR = _
+
+unify ::
+  MonadError TypeError m =>
+  Type ->
+  Type ->
+  m ()
+unify t1 t2 =
+  case t1 of
+    TArr a b ->
+      case t2 of
+        TArr a' b' -> do
+          unify a a'
+          unify b b'
+        TMeta n -> solveR t1 n
+        _ -> throwError $ TypeMismatch t1 t2
+    TMeta n -> solveL n t2
+
+fresh :: Monad m => m Type
+fresh = _
+
+inferType ::
+  (Reflex t, MonadSample t m, MonadError TypeError m) =>
+  [Type] ->
+  ExprD t ->
+  m Type
+inferType ctx expr =
+  case expr of
+    LamD _ body -> do
+      body' <- sample $ current body
+      argTy <- fresh
+      bodyTy <- inferType (argTy : ctx) body'
+      pure $ TArr argTy bodyTy
+    AppD a b -> do
+      a' <- sample $ current a
+      aTy <- inferType ctx a'
+
+      b' <- sample $ current b
+      bTy <- inferType ctx b'
+
+      retTy <- fresh
+      unify aTy (TArr bTy retTy)
+
+      pure retTy
+    VarD n -> pure $ ctx !! n
 
 shouldParens ::
   ExprD t ->
