@@ -69,6 +69,9 @@ showEdit (EditAt p act) =
 data Focus t a where
   FocusPath :: Path t a b -> Focus t a
 
+showFocus :: Focus t a -> String
+showFocus (FocusPath p) = "Focus: " ++ showPath p
+
 data ExprD t
   = VarD Int
   | LamD (Dynamic t String) (Dynamic t (ExprD t))
@@ -227,12 +230,17 @@ nextHoleFocus expr focus = runMaybeT $ go [] id expr focus
       ExprD t ->
       Focus t (ExprD t) ->
       MaybeT m (Focus t (ExprD t))
-    go search path _ (FocusPath Nil) = do
+    go search _ _ (FocusPath Nil) = do
       path' <- asum $ (\(p, e) -> (p $) <$> findHole e) <$> search
-      pure $ FocusPath (path path')
+      pure $ FocusPath path'
     go search path ee (FocusPath (Cons a rest)) =
         case a of
-          LamName -> empty
+          LamName ->
+            case ee of
+              LamD _ body -> do
+                body' <- sample $ current body
+                go ((path . Cons LamBody, body') : search) path ee (FocusPath Nil)
+              _ -> empty
           LamBody ->
             case ee of
               LamD _ body -> do
