@@ -401,24 +401,24 @@ editEvents dFocus = do
 
 newtype Meta = Meta Int deriving (Eq, Ord)
 
-data Type
-  = TArr Type Type
+data TypeD t
+  = TArr (Dynamic t Type) (Dynamic t Type)
   | TUnit
   | TMeta Meta
 
 data TypeError
   = TypeMismatch Type Type
 
-solveL :: MonadError TypeError m => Meta -> Type -> m ()
+solveL :: MonadError TypeError m => Meta -> Dynamic t (TypeD t) -> m ()
 solveL = _
 
-solveR :: MonadError TypeError m => Type -> Meta -> m ()
+solveR :: MonadError TypeError m => Dynamic t (TypeD t) -> Meta -> m ()
 solveR = _
 
 unify ::
   MonadError TypeError m =>
-  Type ->
-  Type ->
+  Dynamic t (TypeD t) ->
+  Dynamic t (TypeD t) ->
   m ()
 unify t1 t2 =
   case t1 of
@@ -431,32 +431,32 @@ unify t1 t2 =
         _ -> throwError $ TypeMismatch t1 t2
     TMeta n -> solveL n t2
 
-fresh :: Monad m => m Type
+fresh :: Monad m => m (Dynamic t (TypeD t))
 fresh = _
 
 inferType ::
   (Reflex t, MonadSample t m, MonadError TypeError m) =>
-  [Type] ->
+  [Dynamic t (TypeD t)] ->
   ExprD t ->
-  m Type
+  m (Dynamic t (TypeD t))
 inferType ctx expr =
   case expr of
     LamD _ body -> do
       body' <- sample $ current body
-      argTy <- fresh
-      bodyTy <- inferType (argTy : ctx) body'
-      pure $ TArr argTy bodyTy
+      dArgTy <- fresh
+      dBodyTy <- inferType (dArgTy : ctx) body'
+      pure $ TArr <$> dArgTy <*> dBodyTy
     AppD a b -> do
       a' <- sample $ current a
-      aTy <- inferType ctx a'
+      dATy <- inferType ctx a'
 
       b' <- sample $ current b
-      bTy <- inferType ctx b'
+      dBTy <- inferType ctx b'
 
-      retTy <- fresh
-      unify aTy (TArr bTy retTy)
+      dRetTy <- fresh
+      unify dATy (TArr <$> dBTy <*> dRetTy)
 
-      pure retTy
+      pure dRetTy
     VarD n -> pure $ ctx !! n
 
 shouldParens ::
