@@ -1,4 +1,4 @@
-# Revision history for editor
+# Revision history for core
 
 ## 0.1.0.0 -- YYYY-mm-dd
 
