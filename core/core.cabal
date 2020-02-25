@@ -21,6 +21,7 @@ library
                      , Focus
                      , Path
                      , Syntax
+                     , Typecheck
   build-depends:       base ^>=4.11.0.0
                      , bound
                      , deriving-compat
