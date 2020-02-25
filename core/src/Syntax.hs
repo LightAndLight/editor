@@ -9,6 +9,18 @@ import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Classes (eq1, showsPrec1)
 import Data.Text (Text)
 
+data Type a
+  = THole
+  | TVar a
+  | TForall Text (Scope () Type a)
+  | TArr (Type a) (Type a)
+  deriving (Functor, Foldable, Traversable)
+deriveEq1 ''Type
+deriveShow1 ''Type
+makeBound ''Type
+instance Eq a => Eq (Type a) where; (==) = eq1
+instance Show a => Show (Type a) where; showsPrec = showsPrec1
+
 data Term a
   = Hole
   | Var a

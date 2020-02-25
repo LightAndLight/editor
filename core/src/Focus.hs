@@ -21,6 +21,16 @@ prevBranch (Path path info) =
           Nothing
         Path.LamBody ->
           Just $ Some (Path (Cons Path.LamArg Nil) TargetIdent)
+        Path.TVar{} ->
+          Nothing
+        Path.TArrL ->
+          Nothing
+        Path.TArrR ->
+          Just $ Some (Path (Cons Path.TArrL Nil) TargetType)
+        Path.TForallArg ->
+          Nothing
+        Path.TForallBody ->
+          Just $ Some (Path (Cons Path.TForallArg Nil) TargetIdent)
     Cons p rest ->
       (\(Some (Path rest' info')) ->
          Some (Path (Cons p rest') info')
@@ -42,6 +52,16 @@ nextBranch (Path path info) =
         Path.LamArg ->
           Just $ Some (Path (Cons Path.LamBody Nil) TargetTerm)
         Path.LamBody ->
+          Nothing
+        Path.TVar{} ->
+          Nothing
+        Path.TArrL ->
+          Just $ Some (Path (Cons Path.TArrR Nil) TargetType)
+        Path.TArrR ->
+          Nothing
+        Path.TForallArg ->
+          Just $ Some (Path (Cons Path.TForallBody Nil) TargetType)
+        Path.TForallBody ->
           Nothing
     Cons p rest ->
       (\(Some (Path rest' info')) ->
