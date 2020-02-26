@@ -25,29 +25,6 @@ data P a b where
   TArrL :: P (Type a) (Type a)
   TArrR :: P (Type a) (Type a)
 
-data Ps a b where
-  Nil :: Ps a a
-  Cons :: P a b -> Ps b c -> Ps a c
-
-snoc :: Ps a b -> P b c -> Ps a c
-snoc Nil a = Cons a Nil
-snoc (Cons a b) c = Cons a (snoc b c)
-
-appendPs :: Ps a b -> Ps b c -> Ps a c
-appendPs Nil a = a
-appendPs (Cons a b) c = Cons a (appendPs b c)
-
-data TargetInfo b where
-  TargetTerm :: TargetInfo (Term v)
-  TargetType :: TargetInfo (Type v)
-  TargetIdent :: TargetInfo Text
-
-data Path a b where
-  Path :: Ps a b -> TargetInfo b -> Path a b
-
-append :: Path a b -> Path b c -> Path a c
-append (Path ps _) (Path qs info) = Path (appendPs ps qs) info
-
 matchP :: P a b -> a -> Maybe (b, b -> a)
 matchP p a =
   case p of
@@ -101,6 +78,30 @@ matchP p a =
         Syntax.TForall n x ->
           Just (Bound.fromScope x, Syntax.TForall n . Bound.toScope)
         _ -> Nothing
+
+
+data Ps a b where
+  Nil :: Ps a a
+  Cons :: P a b -> Ps b c -> Ps a c
+
+snoc :: Ps a b -> P b c -> Ps a c
+snoc Nil a = Cons a Nil
+snoc (Cons a b) c = Cons a (snoc b c)
+
+appendPs :: Ps a b -> Ps b c -> Ps a c
+appendPs Nil a = a
+appendPs (Cons a b) c = Cons a (appendPs b c)
+
+data TargetInfo b where
+  TargetTerm :: TargetInfo (Term v)
+  TargetType :: TargetInfo (Type v)
+  TargetIdent :: TargetInfo Text
+
+data Path a b where
+  Path :: Ps a b -> TargetInfo b -> Path a b
+
+append :: Path a b -> Path b c -> Path a c
+append (Path ps _) (Path qs info) = Path (appendPs ps qs) info
 
 modifyA ::
   Ps a b ->
