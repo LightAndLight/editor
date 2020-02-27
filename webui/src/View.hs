@@ -10,6 +10,7 @@ import Reflex.Dom
   , elClass, text
   )
 
+import Style (classes)
 import qualified Style
 import qualified Syntax
 

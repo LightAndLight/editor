@@ -9,6 +9,13 @@ import Clay
 cssText :: Lazy.Text
 cssText = render css
 
+newtype Class = Class { unClass :: Text }
+
+classes :: [Class] -> Text
+classes [] = mempty
+classes [x] = unClass x
+classes (x:y:ys) = unClass x <> " " <> classes (y:ys)
+
 css :: Css
 css =
   Clay.span ? do
