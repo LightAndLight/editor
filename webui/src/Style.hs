@@ -16,7 +16,26 @@ classes [] = mempty
 classes [x] = unClass x
 classes (x:y:ys) = unClass x <> " " <> classes (y:ys)
 
+focusable :: Class
+focusable = Class "focusable"
+
+hovered :: Class
+hovered = Class "hovered"
+
+node :: Class
+node = Class "node"
+
 css :: Css
-css =
+css = do
   Clay.span ? do
-    fontFamily [] [monospace]
+    fontFamily ["Source Code Pro"] [monospace]
+  byClass (unClass focusable) & do
+    border solid (px 1) transparent
+    byClass (unClass hovered) & do
+      backgroundColor lightgray
+      border solid (px 1) gray
+  byClass (unClass node) & do
+    let p = em 0.1
+    padding p p p p
+    let r = em 0.2
+    borderRadius r r r r
