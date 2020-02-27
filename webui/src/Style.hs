@@ -25,17 +25,30 @@ hovered = Class "hovered"
 node :: Class
 node = Class "node"
 
+leaf :: Class
+leaf = Class "leaf"
+
 css :: Css
 css = do
   Clay.span ? do
     fontFamily ["Source Code Pro"] [monospace]
   byClass (unClass focusable) & do
+    let fade prop = transition prop 0.25 ease 0
+    fade "border-color"
     border solid (px 1) transparent
     byClass (unClass hovered) & do
       backgroundColor lightgray
       border solid (px 1) gray
   byClass (unClass node) & do
-    let p = em 0.1
-    padding p p p p
+    display inlineBlock
+    let m = em 0.025
+    let m2 = em 0.125
+    marginTop m
+    marginBottom m
+    marginLeft m2
+    marginRight m2
     let r = em 0.2
     borderRadius r r r r
+    byClass (unClass leaf) & do
+      let p = em 0.15
+      padding p p p p

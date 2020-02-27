@@ -10,4 +10,6 @@ import Syntax
 import View (viewTerm)
 
 app :: (MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m) => m ()
-app = viewTerm id $ App (App (Var "f") (Var "x")) Hole
+app = do
+  _ <- viewTerm id $ App (App (Var "f") (Var "x")) Hole
+  pure ()
