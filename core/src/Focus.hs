@@ -2,69 +2,78 @@
 module Focus where
 
 import Data.Some (Some(..))
-import Path (Path(..), Ps(..), TargetInfo(..))
+import Path
+  ( PathInfo(..)
+  , empty, cons
+  , ViewL(..), viewl
+  , TargetInfo(..)
+  )
 import qualified Path
 
-prevBranch :: Path a b -> Maybe (Some (Path a))
-prevBranch (Path path info) =
-  case path of
-    Nil -> Nothing
-    Cons p Nil ->
-      case p of
-        Path.Var{} ->
-          Nothing
-        Path.AppL ->
-          Nothing
-        Path.AppR ->
-          Just $ Some (Path (Cons Path.AppL Nil) TargetTerm)
-        Path.LamArg ->
-          Nothing
-        Path.LamBody ->
-          Just $ Some (Path (Cons Path.LamArg Nil) TargetIdent)
-        Path.TVar{} ->
-          Nothing
-        Path.TArrL ->
-          Nothing
-        Path.TArrR ->
-          Just $ Some (Path (Cons Path.TArrL Nil) TargetType)
-        Path.TForallArg ->
-          Nothing
-        Path.TForallBody ->
-          Just $ Some (Path (Cons Path.TForallArg Nil) TargetIdent)
-    Cons p rest ->
-      (\(Some (Path rest' info')) ->
-         Some (Path (Cons p rest') info')
-      ) <$>
-      prevBranch (Path rest info)
+prevBranch :: PathInfo a b -> Maybe (Some (PathInfo a))
+prevBranch (PathInfo path info) =
+  case viewl path of
+    EmptyL -> Nothing
+    p :< rest ->
+      case viewl rest of
+        EmptyL ->
+          case p of
+            Path.Var{} ->
+              Nothing
+            Path.AppL ->
+              Nothing
+            Path.AppR ->
+              Just $ Some (PathInfo (cons Path.AppL empty) TargetTerm)
+            Path.LamArg ->
+              Nothing
+            Path.LamBody ->
+              Just $ Some (PathInfo (cons Path.LamArg empty) TargetIdent)
+            Path.TVar{} ->
+              Nothing
+            Path.TArrL ->
+              Nothing
+            Path.TArrR ->
+              Just $ Some (PathInfo (cons Path.TArrL empty) TargetType)
+            Path.TForallArg ->
+              Nothing
+            Path.TForallBody ->
+              Just $ Some (PathInfo (cons Path.TForallArg empty) TargetIdent)
+        _ :< _ ->
+          (\(Some (PathInfo rest' info')) ->
+            Some (PathInfo (cons p rest') info')
+          ) <$>
+          prevBranch (PathInfo rest info)
 
-nextBranch :: Path a b -> Maybe (Some (Path a))
-nextBranch (Path path info) =
-  case path of
-    Nil -> Nothing
-    Cons p Nil ->
-      case p of
-        Path.Var{} ->
-          Nothing
-        Path.AppL ->
-          Just $ Some (Path (Cons Path.AppR Nil) TargetTerm)
-        Path.AppR ->
-          Nothing
-        Path.LamArg ->
-          Just $ Some (Path (Cons Path.LamBody Nil) TargetTerm)
-        Path.LamBody ->
-          Nothing
-        Path.TVar{} ->
-          Nothing
-        Path.TArrL ->
-          Just $ Some (Path (Cons Path.TArrR Nil) TargetType)
-        Path.TArrR ->
-          Nothing
-        Path.TForallArg ->
-          Just $ Some (Path (Cons Path.TForallBody Nil) TargetType)
-        Path.TForallBody ->
-          Nothing
-    Cons p rest ->
-      (\(Some (Path rest' info')) ->
-         Some (Path (Cons p rest') info')
-      ) <$>
-      nextBranch (Path rest info)
+nextBranch :: PathInfo a b -> Maybe (Some (PathInfo a))
+nextBranch (PathInfo path info) =
+  case viewl path of
+    EmptyL -> Nothing
+    p :< rest ->
+      case viewl rest of
+        EmptyL ->
+          case p of
+            Path.Var{} ->
+              Nothing
+            Path.AppL ->
+              Just $ Some (PathInfo (cons Path.AppR empty) TargetTerm)
+            Path.AppR ->
+              Nothing
+            Path.LamArg ->
+              Just $ Some (PathInfo (cons Path.LamBody empty) TargetTerm)
+            Path.LamBody ->
+              Nothing
+            Path.TVar{} ->
+              Nothing
+            Path.TArrL ->
+              Just $ Some (PathInfo (cons Path.TArrR empty) TargetType)
+            Path.TArrR ->
+              Nothing
+            Path.TForallArg ->
+              Just $ Some (PathInfo (cons Path.TForallBody empty) TargetType)
+            Path.TForallBody ->
+              Nothing
+        _ :< _ ->
+          (\(Some (PathInfo rest' info')) ->
+            Some (PathInfo (cons p rest') info')
+          ) <$>
+          nextBranch (PathInfo rest info)

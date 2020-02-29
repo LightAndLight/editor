@@ -8,27 +8,27 @@ import Data.Text (Text)
 
 import Syntax (Term, Type)
 import qualified Syntax
-import Path (Path(..), TargetInfo(..))
+import Path (PathInfo(..), TargetInfo(..))
 import qualified Path
 
 data Action a b where
-  InsertTerm :: Term a -> Path (Term a) b -> Action (Term a) b
+  InsertTerm :: Term a -> PathInfo (Term a) b -> Action (Term a) b
   DeleteTerm :: Action (Term a) (Term a)
   ModifyIdent :: (Text -> Text) -> Action Text Text
-  InsertType :: Type a -> Path (Type a) b -> Action (Type a) b
+  InsertType :: Type a -> PathInfo (Type a) b -> Action (Type a) b
   DeleteType :: Action (Type a) (Type a)
 
 data EditError where
-  InvalidPath :: Path a b -> a -> EditError
-  InsertNonHole :: Path a b -> b -> EditError
+  InvalidPath :: PathInfo a b -> a -> EditError
+  InsertNonHole :: PathInfo a b -> b -> EditError
 
 edit ::
   forall src tgt tgt'.
-  Path src tgt ->
+  PathInfo src tgt ->
   Action tgt tgt' ->
   src ->
-  Either EditError (Path src tgt', src)
-edit p@(Path path TargetTerm) action a =
+  Either EditError (PathInfo src tgt', src)
+edit p@(PathInfo path TargetTerm) action a =
   -- path : Path a (Term x)
   -- action : Edit (Term x) c
   let
@@ -43,12 +43,12 @@ edit p@(Path path TargetTerm) action a =
       case Path.modifyA path (replaceHoleWith tm) a of
         Left err -> Left err
         Right Nothing -> Left $ InvalidPath p a
-        Right (Just a') -> Right (Path.append p suffix, a')
+        Right (Just a') -> Right (Path.appendPath p suffix, a')
     DeleteTerm ->
       case Path.set path Syntax.Hole a of
         Nothing -> Left $ InvalidPath p a
         Just a' -> Right (p, a')
-edit p@(Path path TargetIdent) action a =
+edit p@(PathInfo path TargetIdent) action a =
   -- path : Path a Text
   -- action : Edit Text c
   case action of
@@ -56,7 +56,7 @@ edit p@(Path path TargetIdent) action a =
       case Path.modify path f a of
         Nothing -> Left $ InvalidPath p a
         Just a' -> Right (p, a')
-edit p@(Path path TargetType) action a =
+edit p@(PathInfo path TargetType) action a =
   let
     replaceHoleWith :: tgt -> tgt -> Either EditError tgt
     replaceHoleWith new old =
@@ -69,7 +69,7 @@ edit p@(Path path TargetType) action a =
       case Path.modifyA path (replaceHoleWith ty) a of
         Left err -> Left err
         Right Nothing -> Left $ InvalidPath p a
-        Right (Just a') -> Right (Path.append p suffix, a')
+        Right (Just a') -> Right (Path.appendPath p suffix, a')
     DeleteType ->
       case Path.set path Syntax.THole a of
         Nothing -> Left $ InvalidPath p a

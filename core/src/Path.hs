@@ -79,48 +79,196 @@ matchP p a =
           Just (Bound.fromScope x, Syntax.TForall n . Bound.toScope)
         _ -> Nothing
 
+data Digit f a b where
+  One :: f a b -> Digit f a b
+  Two :: f a b -> f b c -> Digit f a c
+  Three :: f a b -> f b c -> f c d -> Digit f a d
+  Four :: f a b -> f b c -> f c d -> f d e -> Digit f a e
 
-data Ps a b where
-  Nil :: Ps a a
-  Cons :: P a b -> Ps b c -> Ps a c
+data Node f a b where
+  Node2 :: f a b -> f b c -> Node f a c
+  Node3 :: f a b -> f b c -> f c d -> Node f a d
 
-snoc :: Ps a b -> P b c -> Ps a c
-snoc Nil a = Cons a Nil
-snoc (Cons a b) c = Cons a (snoc b c)
+data Seq f a b where
+  Empty :: Seq f a a
+  Single :: f a b -> Seq f a b
+  Deep :: Digit f a b -> Seq (Node f) b c -> Digit f c d -> Seq f a d
 
-appendPs :: Ps a b -> Ps b c -> Ps a c
-appendPs Nil a = a
-appendPs (Cons a b) c = Cons a (appendPs b c)
+empty :: Seq f a a
+empty = Empty
+
+cons :: f a b -> Seq f b c -> Seq f a c
+cons a xs =
+  case xs of
+    Empty -> Single a
+    Single x -> Deep (One a) Empty (One x)
+    Deep l m r ->
+      case l of
+        One x1 -> Deep (Two a x1) m r
+        Two x1 x2 -> Deep (Three a x1 x2) m r
+        Three x1 x2 x3 -> Deep (Four a x1 x2 x3) m r
+        Four x1 x2 x3 x4 -> Deep (Two a x1) (Node3 x2 x3 x4 `cons` m) r
+
+snoc :: Seq f a b -> f b c -> Seq f a c
+snoc xs a =
+  case xs of
+    Empty -> Single a
+    Single x -> Deep (One x) Empty (One a)
+    Deep l m r ->
+      case r of
+        One x1 -> Deep l m (Two x1 a)
+        Two x1 x2 -> Deep l m (Three x1 x2 a)
+        Three x1 x2 x3 -> Deep l m (Four x1 x2 x3 a)
+        Four x1 x2 x3 x4 -> Deep l (m `snoc` Node3 x1 x2 x3) (Two x4 a)
+
+data Nodes f a b where
+  NodeNil :: Nodes f a a
+  NodeCons :: f a b -> Nodes f b c -> Nodes f a c
+
+appendNodes :: Nodes f a b -> Nodes f b c -> Nodes f a c
+appendNodes a b =
+  case a of
+    NodeNil -> b
+    NodeCons x xs -> NodeCons x (appendNodes xs b)
+
+digitNodes :: Digit f a b -> Nodes f a b
+digitNodes (One a) =
+  NodeCons a $
+  NodeNil
+digitNodes (Two a b) =
+  NodeCons a $
+  NodeCons b $
+  NodeNil
+digitNodes (Three a b c) =
+  NodeCons a $
+  NodeCons b $
+  NodeCons c $
+  NodeNil
+digitNodes (Four a b c d) =
+  NodeCons a $
+  NodeCons b $
+  NodeCons c $
+  NodeCons d $
+  NodeNil
+
+nodes :: Nodes f a b -> Nodes (Node f) a b
+nodes ns =
+  case ns of
+    NodeNil -> undefined
+    NodeCons _ NodeNil -> undefined
+
+    NodeCons a (NodeCons b NodeNil) ->
+      NodeCons (Node2 a b) NodeNil
+    NodeCons a (NodeCons b (NodeCons c NodeNil)) ->
+      NodeCons (Node3 a b c) NodeNil
+    NodeCons a (NodeCons b (NodeCons c (NodeCons d NodeNil))) ->
+      NodeCons (Node2 a b) $
+      NodeCons (Node2 c d) $
+      NodeNil
+    NodeCons a (NodeCons b (NodeCons c cs)) ->
+      NodeCons (Node3 a b c) $ nodes cs
+
+consNodes :: Nodes f a b -> Seq f b c -> Seq f a c
+consNodes ns s =
+  case ns of
+    NodeNil -> s
+    NodeCons x xs -> cons x $ consNodes xs s
+
+snocNodes :: Seq f a b -> Nodes f b c -> Seq f a c
+snocNodes s ns =
+  case ns of
+    NodeNil -> s
+    NodeCons x xs -> snocNodes (snoc s x) xs
+
+append :: Seq f a b -> Seq f b c -> Seq f a c
+append xx yy = inner xx NodeNil yy
+  where
+    inner ::
+      Seq f a b ->
+      Nodes f b c ->
+      Seq f c d ->
+      Seq f a d
+    inner Empty b c = consNodes b c
+    inner a b Empty = snocNodes a b
+    inner (Single a) b c = cons a (consNodes b c)
+    inner a b (Single c) = snoc (snocNodes a b) c
+    inner (Deep l1 m1 r1) b (Deep l2 m2 r2) =
+      Deep
+        l1
+        (inner
+           m1
+           (nodes $
+            appendNodes (digitNodes r1) $
+            appendNodes b (digitNodes l2)
+           )
+           m2
+        )
+        r2
+
+data ViewL f a b where
+  EmptyL :: ViewL f a a
+  (:<) :: f a b -> Seq f b c -> ViewL f a c
+
+nodeToDigit :: Node f a b -> Digit f a b
+nodeToDigit n =
+  case n of
+    Node2 a b -> Two a b
+    Node3 a b c -> Three a b c
+
+digitToSeq :: Digit f a b -> Seq f a b
+digitToSeq dig =
+  case dig of
+    One a -> Single a
+    Two a b -> cons a $ Single b
+    Three a b c -> cons a $ cons b $ Single c
+    Four a b c d -> cons a $ cons b $ cons c $ Single d
+
+viewl :: Seq f a b -> ViewL f a b
+viewl s =
+  case s of
+    Empty -> EmptyL
+    Single x -> x :< Empty
+    Deep l m r ->
+      case l of
+        One a ->
+          case viewl m of
+            EmptyL -> a :< digitToSeq r
+            z :< zs -> a :< Deep (nodeToDigit z) zs r
+        Two a b -> a :< Deep (One b) m r
+        Three a b c -> a :< Deep (Two b c) m r
+        Four a b c d -> a :< Deep (Three b c d) m r
 
 data TargetInfo b where
   TargetTerm :: TargetInfo (Term v)
   TargetType :: TargetInfo (Type v)
   TargetIdent :: TargetInfo Text
 
-data Path a b where
-  Path :: Ps a b -> TargetInfo b -> Path a b
+type Path = Seq P
 
-append :: Path a b -> Path b c -> Path a c
-append (Path ps _) (Path qs info) = Path (appendPs ps qs) info
+data PathInfo a b where
+  PathInfo :: Seq P a b -> TargetInfo b -> PathInfo a b
+
+appendPath :: PathInfo a b -> PathInfo b c -> PathInfo a c
+appendPath (PathInfo ps _) (PathInfo qs info) = PathInfo (append ps qs) info
 
 modifyA ::
-  Ps a b ->
+  Path a b ->
   forall f. Applicative f => (b -> f b) -> a -> f (Maybe a)
 modifyA path f a =
-  case path of
-    Nil -> Just <$> f a
-    Cons p ps ->
+  case viewl path of
+    EmptyL -> Just <$> f a
+    p :< ps ->
       case matchP p a of
         Nothing -> pure Nothing
         Just (x, re) ->
           (fmap.fmap) re $
           modifyA ps f x
 
-modify :: Ps a b -> (b -> b) -> a -> Maybe a
+modify :: Path a b -> (b -> b) -> a -> Maybe a
 modify path f = runIdentity . modifyA path (Identity . f)
 
-get :: Ps a b -> a -> Maybe b
+get :: Path a b -> a -> Maybe b
 get path = getFirst . getConst . modifyA path (Const . First . Just)
 
-set :: Ps a b -> b -> a -> Maybe a
+set :: Path a b -> b -> a -> Maybe a
 set path v = modify path (const v)
