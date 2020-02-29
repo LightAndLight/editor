@@ -22,6 +22,9 @@ focusable = Class "focusable"
 hovered :: Class
 hovered = Class "hovered"
 
+selected :: Class
+selected = Class "selected"
+
 node :: Class
 node = Class "node"
 
@@ -39,6 +42,9 @@ css = do
     byClass (unClass hovered) & do
       backgroundColor lightgray
       border solid (px 1) gray
+  byClass (unClass Style.selected) & do
+    backgroundColor lightgray
+    border solid (px 1) gray
   byClass (unClass node) & do
     display inlineBlock
     let m = em 0.025
