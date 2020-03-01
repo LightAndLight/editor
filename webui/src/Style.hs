@@ -1,4 +1,5 @@
 {-# language OverloadedStrings #-}
+{-# language OverloadedLists #-}
 module Style where
 
 import qualified Data.Text.Lazy as Lazy (Text)
@@ -31,6 +32,15 @@ node = Class "node"
 leaf :: Class
 leaf = Class "leaf"
 
+clicking :: Class
+clicking = Class "clicking"
+
+activeLight :: Color
+activeLight = Rgba 150 150 150 0.3
+
+activeDark :: Color
+activeDark = Rgba 0 0 0 0.45
+
 css :: Css
 css = do
   Clay.span ? do
@@ -38,13 +48,20 @@ css = do
   byClass (unClass focusable) & do
     let fade prop = transition prop 0.25 ease 0
     fade "border-color"
+    fade "background-color"
     border solid (px 1) transparent
     byClass (unClass hovered) & do
-      backgroundColor lightgray
-      border solid (px 1) gray
+      backgroundColor activeLight
+      border solid (px 1) activeDark
+      byClass (unClass clicking) & do
+        boxShadow
+          [ bsColor (Rgba 0 0 0 0.15) $
+            bsInset $
+            shadowWithSpread nil nil (em 0.1) (px 1)
+          ]
   byClass (unClass Style.selected) & do
-    backgroundColor lightgray
-    border solid (px 1) gray
+    backgroundColor activeLight
+    border solid (px 1) activeDark
   byClass (unClass node) & do
     display inlineBlock
     let m = em 0.025

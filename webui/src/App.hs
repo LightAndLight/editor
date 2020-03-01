@@ -1,4 +1,4 @@
-{-# language OverloadedStrings #-}
+{-# language OverloadedStrings, RecursiveDo #-}
 module App (app) where
 
 import Control.Monad.Fix (MonadFix)
@@ -13,9 +13,12 @@ import View (viewTerm)
 
 app :: (MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m) => m ()
 app = do
-  _ <-
-    viewTerm
-      id
-      (Just $ Some $ cons AppL empty)
-      (App (App (Var "f") (Var "x")) Hole)
+  rec
+    dSelection <- holdDyn Nothing $ Just <$> eSelection
+    (_, eSelection) <-
+      viewTerm
+        id
+        empty
+        dSelection
+        (App (App (Var "f") (Var "x")) Hole)
   pure ()
