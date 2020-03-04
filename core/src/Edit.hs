@@ -7,21 +7,22 @@ module Edit where
 import Data.Text (Text)
 
 import Syntax (Term, Type)
-import qualified Syntax
-import Path (PathInfo(..), TargetInfo(..))
-import qualified Path
+-- import qualified Syntax
+import Path (Path)
+-- import qualified Path
 
 data Action a b where
-  InsertTerm :: Term a -> PathInfo (Term a) b -> Action (Term a) b
+  InsertTerm :: Term a -> Path (Term a) b -> Action (Term a) b
   DeleteTerm :: Action (Term a) (Term a)
   ModifyIdent :: (Text -> Text) -> Action Text Text
-  InsertType :: Type a -> PathInfo (Type a) b -> Action (Type a) b
+  InsertType :: Type a -> Path (Type a) b -> Action (Type a) b
   DeleteType :: Action (Type a) (Type a)
 
 data EditError where
-  InvalidPath :: PathInfo a b -> a -> EditError
-  InsertNonHole :: PathInfo a b -> b -> EditError
+  InvalidPath :: Path a b -> a -> EditError
+  InsertNonHole :: Path a b -> b -> EditError
 
+{-
 edit ::
   forall src tgt tgt'.
   PathInfo src tgt ->
@@ -74,3 +75,4 @@ edit p@(PathInfo path TargetType) action a =
       case Path.set path Syntax.THole a of
         Nothing -> Left $ InvalidPath p a
         Just a' -> Right (p, a')
+-}

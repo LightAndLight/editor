@@ -25,7 +25,6 @@ type Selection a = Some (Path a)
 viewTerm ::
   forall t m a b.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
-  , PerformEvent t m, MonadIO (Performable m)
   ) =>
   (b -> Text) ->
   Path (Syntax.Term a) (Syntax.Term b) ->
@@ -38,7 +37,6 @@ viewTerm name path dmSelection tm = do
     let eMouseLeave = domEvent Mouseleave e
     let eMouseDown = domEvent Mousedown e
     let eMouseUp = domEvent Mouseup e
-    let eSpace = keypress Space e
     dThisHovered <-
       holdDyn False $
       leftmost [True <$ eMouseEnter, False <$ eMouseLeave]
@@ -63,8 +61,6 @@ viewTerm name path dmSelection tm = do
                  _ :< _ -> False
         ) <$>
         dmSelection
-      eMenu = gate (current dSelected) eSpace
-    performEvent_ $ liftIO (putStrLn "hi") <$ eMenu
     (e, (dChildHovered, eChildClicked)) <-
       elDynClass'
         "span"

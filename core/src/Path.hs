@@ -209,6 +209,10 @@ data ViewL f a b where
   EmptyL :: ViewL f a a
   (:<) :: f a b -> Seq f b c -> ViewL f a c
 
+data ViewR f a b where
+  EmptyR :: ViewR f a a
+  (:>) :: Seq f a b -> f b c -> ViewR f a c
+
 nodeToDigit :: Node f a b -> Digit f a b
 nodeToDigit n =
   case n of
@@ -238,6 +242,21 @@ viewl s =
         Three a b c -> a :< Deep (Two b c) m r
         Four a b c d -> a :< Deep (Three b c d) m r
 
+viewr :: Seq f a b -> ViewR f a b
+viewr s =
+  case s of
+    Empty -> EmptyR
+    Single x -> Empty :> x
+    Deep l m r ->
+      case r of
+        One a ->
+          case viewr m of
+            EmptyR -> digitToSeq l :> a
+            zs :> z -> Deep l zs (nodeToDigit z) :> a
+        Two a b -> Deep l m (One a) :> b
+        Three a b c -> Deep l m (Two a b) :> c
+        Four a b c d -> Deep l m (Three a b c) :> d
+
 data TargetInfo b where
   TargetTerm :: TargetInfo (Term v)
   TargetType :: TargetInfo (Type v)
@@ -245,11 +264,23 @@ data TargetInfo b where
 
 type Path = Seq P
 
-data PathInfo a b where
-  PathInfo :: Seq P a b -> TargetInfo b -> PathInfo a b
-
-appendPath :: PathInfo a b -> PathInfo b c -> PathInfo a c
-appendPath (PathInfo ps _) (PathInfo qs info) = PathInfo (append ps qs) info
+targetInfo :: Path a b -> Maybe (TargetInfo b)
+targetInfo ps =
+  case viewr ps of
+    EmptyR -> Nothing
+    _ :> p ->
+      Just $
+      case p of
+        AppL -> TargetTerm
+        AppR -> TargetTerm
+        Var -> undefined
+        LamArg -> TargetIdent
+        LamBody -> TargetTerm
+        TVar -> undefined
+        TForallArg -> TargetIdent
+        TForallBody -> TargetType
+        TArrL -> TargetType
+        TArrR -> TargetType
 
 modifyA ::
   Path a b ->
