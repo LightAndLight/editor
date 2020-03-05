@@ -88,7 +88,9 @@ viewTerm name path dmSelection tm = do
           text (name a)
           pure (constDyn False, never)
         Syntax.App a b -> do
+          let parensa = case a of; Syntax.Lam{} -> True; _ -> False
           (dH1, eC1) <-
+            (if parensa then text "(" else pure ()) *>
             viewTerm
               name
               (snoc path AppL)
@@ -100,8 +102,17 @@ viewTerm name path dmSelection tm = do
                ) <$>
                dmSelection
               )
-              a
+              a <*
+            (if parensa then text ")" else pure ())
+
+          let
+            parensb =
+              case b of
+                Syntax.Lam{} -> True
+                Syntax.App{} -> True
+                _ -> False
           (dH2, eC2) <-
+            (if parensb then text "(" else pure ()) *>
             viewTerm
               name
               (snoc path AppR)
@@ -113,7 +124,9 @@ viewTerm name path dmSelection tm = do
                ) <$>
                dmSelection
               )
-              b
+              b <*
+            (if parensb then text ")" else pure ())
+
           dH <- holdUniqDyn $ (||) <$> dH1 <*> dH2
           pure
             ( dH

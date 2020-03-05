@@ -164,6 +164,16 @@ renderMenuActions selected =
     )
     (pure never)
 
+bindDynamicM ::
+  (MonadHold t m, DomBuilder t m) =>
+  (a -> m b) ->
+  Dynamic t a ->
+  m (Dynamic t b)
+bindDynamicM f d =
+  widgetHold
+    (f =<< sample (current d))
+    (f <$> updated d)
+
 menuForTarget ::
   forall t m a.
   ( MonadHold t m, DomBuilder t m
@@ -183,15 +193,9 @@ menuForTarget eNextItem eEnter target =
     (dSelection, dItems) <- menuItems eNextItem target
     eItemClicked :: Event t Int <-
       fmap switchDyn $
-      widgetHold
-        (do
-           sel <- sample $ current dSelection
-           items <- sample $ current dItems
-           renderMenuActions sel items
-        )
-        (fmap (uncurry renderMenuActions) $
-         updated ((,) <$> dSelection <*> dItems)
-        )
+      bindDynamicM
+        (uncurry renderMenuActions)
+        ((,) <$> dSelection <*> dItems)
     pure $
       leftmost
       [ (Vector.!) <$> current dItems <@> eItemClicked
@@ -218,8 +222,10 @@ menu eOpen eClose eNextItem eEnter dSelection =
       (pure never)
       (\(Some path) ->
          case targetInfo path of
-           Nothing -> undefined
-           Just target -> fmap Some <$> menuForTarget eNextItem eEnter target
+           Nothing ->
+             undefined
+           Just target ->
+             fmap Some <$> menuForTarget eNextItem eEnter target
       ) <$>
     current dSelection <@ eOpen
   , pure never <$ eClose
@@ -243,15 +249,15 @@ app = do
     eNextItem =
       fmapMaybe (\case; "Tab" -> Just (); _ -> Nothing) eKeyPressed
     eEnter =
-      fmapMaybe (\case; "Entery" -> Just (); _ -> Nothing) eKeyPressed
+      fmapMaybe (\case; "Enter" -> Just (); _ -> Nothing) eKeyPressed
   rec
+    dTerm <- holdDyn (App (App (Var "f") (Var "x")) Hole) never
     dSelection <- holdDyn Nothing $ Just <$> eSelection
-    (_, eSelection) <-
-      viewTerm
-        id
-        empty
-        dSelection
-        (App (App (Var "f") (Var "x")) Hole)
+    eSelection :: Event t (View.Selection (Syntax.Term Text)) <-
+      fmap switchDyn $
+      bindDynamicM
+        (fmap snd . viewTerm id empty dSelection)
+        dTerm
   rec
     let
       eOpenMenu = eSpace
