@@ -7,6 +7,8 @@
 {-# language TypeFamilies #-}
 module App (app) where
 
+import qualified Debug.Trace as Debug
+
 import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -16,6 +18,7 @@ import Data.Functor (void)
 import Data.Some (Some(..))
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Type.Equality ((:~:)(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (absurd)
@@ -28,7 +31,8 @@ import JSDOM.Types (liftJSM, toJSVal, fromJSValUnchecked)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex.Dom hiding (preventDefault)
 
-import Path (P(AppL), TargetInfo(..), targetInfo, cons, empty)
+import qualified Edit
+import Path (Path, TargetInfo(..), targetInfo, cons, empty)
 import qualified Style
 import Syntax
 import View (viewTerm)
@@ -99,8 +103,8 @@ menuInput = do
     ePostBuild
 
 data MenuAction a where
-  InsertLam :: MenuAction (Term v)
-  InsertApp :: MenuAction (Term v)
+  InsertLam :: Path a (Term v) -> TargetInfo (Term v) -> MenuAction a
+  InsertApp :: Path a (Term v) -> TargetInfo (Term v) -> MenuAction a
   Other :: Text -> MenuAction a
 
 renderMenuAction ::
@@ -110,8 +114,8 @@ renderMenuAction ::
   m (Event t ())
 renderMenuAction selected action =
   case action of
-    InsertLam -> item "_ _"
-    InsertApp -> item "\\_ -> _"
+    InsertLam{} -> item "\\x -> _"
+    InsertApp{} -> item "_ _"
     Other str -> item str
   where
     item x = do
@@ -129,9 +133,10 @@ renderMenuAction selected action =
 menuItems ::
   (MonadHold t m, DomBuilder t m, MonadFix m) =>
   Event t () ->
-  TargetInfo a ->
+  Path a b ->
+  TargetInfo b ->
   m (Dynamic t Int, Dynamic t (Vector (MenuAction a)))
-menuItems eNextItem info = do
+menuItems eNextItem path info = do
   rec
     dSelection :: Dynamic t Int <-
       holdDyn 0 $
@@ -143,7 +148,7 @@ menuItems eNextItem info = do
     dItems <-
       case info of
         TargetTerm ->
-          pure $ constDyn [InsertApp, InsertLam]
+          pure $ constDyn [InsertApp path info, InsertLam path info]
         TargetType ->
           pure $ constDyn [Other "thing4", Other "thing5", Other "thing6"]
         TargetIdent ->
@@ -175,7 +180,7 @@ bindDynamicM f d =
     (f <$> updated d)
 
 menuForTarget ::
-  forall t m a.
+  forall t m a b.
   ( MonadHold t m, DomBuilder t m
   , DomBuilderSpace m ~ GhcjsDomSpace
   , PostBuild t m, TriggerEvent t m
@@ -184,13 +189,14 @@ menuForTarget ::
   ) =>
   Event t () ->
   Event t () ->
-  TargetInfo a ->
+  Path a b ->
+  TargetInfo b ->
   m (Event t (MenuAction a))
-menuForTarget eNextItem eEnter target =
+menuForTarget eNextItem eEnter path target =
   elAttr "div" ("style" =: "position: absolute" <> "class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
     elAttr "div" ("class" =: "dropdown-item") menuInput
-    (dSelection, dItems) <- menuItems eNextItem target
+    (dSelection, dItems) <- menuItems eNextItem path target
     eItemClicked :: Event t Int <-
       fmap switchDyn $
       bindDynamicM
@@ -214,7 +220,7 @@ menu ::
   Event t () ->
   Event t () ->
   Dynamic t (Maybe (View.Selection (Syntax.Term a))) ->
-  m (Event t (Some MenuAction))
+  m (Event t (MenuAction (Syntax.Term a)))
 menu eOpen eClose eNextItem eEnter dSelection =
   fmap switchDyn . widgetHold (pure never) $
   leftmost
@@ -222,10 +228,10 @@ menu eOpen eClose eNextItem eEnter dSelection =
       (pure never)
       (\(Some path) ->
          case targetInfo path of
-           Nothing ->
+           Left Refl ->
              undefined
-           Just target ->
-             fmap Some <$> menuForTarget eNextItem eEnter target
+           Right target ->
+             menuForTarget eNextItem eEnter path target
       ) <$>
     current dSelection <@ eOpen
   , pure never <$ eClose
@@ -251,14 +257,30 @@ app = do
     eEnter =
       fmapMaybe (\case; "Enter" -> Just (); _ -> Nothing) eKeyPressed
   rec
-    dTerm <- holdDyn (App (App (Var "f") (Var "x")) Hole) never
+    dTerm <-
+      holdDyn
+        (App (App (Var "f") (Var "x")) Hole)
+        ((\old action ->
+            case action of
+              InsertLam path info ->
+                case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) Path.empty) old of
+                  Left err -> Debug.traceShow err old
+                  Right (_, _, new) -> new
+              InsertApp path info ->
+                case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) Path.empty) old of
+                  Left err -> Debug.traceShow err old
+                  Right (_, _, new) -> new
+              Other{} -> old
+         ) <$>
+         current dTerm <@>
+         eMenuAction
+        )
     dSelection <- holdDyn Nothing $ Just <$> eSelection
     eSelection :: Event t (View.Selection (Syntax.Term Text)) <-
       fmap switchDyn $
       bindDynamicM
         (fmap snd . viewTerm id empty dSelection)
         dTerm
-  rec
     let
       eOpenMenu = eSpace
       eCloseMenu = eEscape <> void eSelection <> void eMenuAction

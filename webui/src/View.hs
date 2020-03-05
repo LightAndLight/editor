@@ -133,7 +133,7 @@ viewTerm name path dmSelection tm = do
             , leftmost [eC1, eC2]
             )
         Syntax.Lam n e -> do
-          text n
+          text $ "\\" <> n <> " ->"
           (dH1, eC1) <-
             viewTerm
               (unvar (\() -> n) name)

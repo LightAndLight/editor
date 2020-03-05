@@ -1,5 +1,6 @@
 {-# language GADTs #-}
 {-# language RankNTypes #-}
+{-# language TypeOperators #-}
 module Path where
 
 import qualified Bound
@@ -8,6 +9,7 @@ import Data.Functor.Const (Const(..))
 import Data.Functor.Identity (Identity(..))
 import Data.Monoid (First(..))
 import Data.Text (Text)
+import Data.Type.Equality ((:~:)(..))
 
 import Syntax (Term, Type)
 import qualified Syntax
@@ -264,12 +266,12 @@ data TargetInfo b where
 
 type Path = Seq P
 
-targetInfo :: Path a b -> Maybe (TargetInfo b)
+targetInfo :: Path a b -> Either (a :~: b) (TargetInfo b)
 targetInfo ps =
   case viewr ps of
-    EmptyR -> Nothing
+    EmptyR -> Left Refl
     _ :> p ->
-      Just $
+      Right $
       case p of
         AppL -> TargetTerm
         AppR -> TargetTerm
