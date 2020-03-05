@@ -29,7 +29,7 @@ import qualified GHCJS.DOM.GlobalEventHandlers as Events
 import qualified JSDOM.Generated.KeyboardEvent as KeyboardEvent
 import JSDOM.Types (liftJSM, toJSVal, fromJSValUnchecked)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
-import Reflex.Dom hiding (preventDefault)
+import Reflex.Dom hiding (Delete, preventDefault)
 
 import qualified Edit
 import Path (Path, TargetInfo(..), targetInfo, cons, empty)
@@ -106,6 +106,9 @@ data MenuAction a where
   InsertLam :: Path a (Term v) -> TargetInfo (Term v) -> MenuAction a
   InsertApp :: Path a (Term v) -> TargetInfo (Term v) -> MenuAction a
   Other :: Text -> MenuAction a
+
+data TermAction a where
+  Delete :: Path a (Term v) -> TermAction a
 
 renderMenuAction ::
   DomBuilder t m =>
@@ -220,22 +223,25 @@ menu ::
   Event t () ->
   Event t () ->
   Dynamic t (Maybe (View.Selection (Syntax.Term a))) ->
-  m (Event t (MenuAction (Syntax.Term a)))
-menu eOpen eClose eNextItem eEnter dSelection =
-  fmap switchDyn . widgetHold (pure never) $
-  leftmost
-  [ maybe
-      (pure never)
-      (\(Some path) ->
-         case targetInfo path of
-           Left Refl ->
-             undefined
-           Right target ->
-             menuForTarget eNextItem eEnter path target
-      ) <$>
-    current dSelection <@ eOpen
-  , pure never <$ eClose
-  ]
+  m (Dynamic t Bool, Event t (MenuAction (Syntax.Term a)))
+menu eOpen eClose eNextItem eEnter dSelection = do
+  eAction <-
+    fmap switchDyn . widgetHold (pure never) $
+    leftmost
+    [ maybe
+        (pure never)
+        (\(Some path) ->
+          case targetInfo path of
+            Left Refl ->
+              undefined
+            Right target ->
+              menuForTarget eNextItem eEnter path target
+        ) <$>
+      current dSelection <@ eOpen
+    , pure never <$ eClose
+    ]
+  dOpen <- holdDyn False $ leftmost [True <$ eOpen, False <$ eClose]
+  pure (dOpen, eAction)
 
 app ::
   forall t m.
@@ -256,24 +262,34 @@ app = do
       fmapMaybe (\case; "Tab" -> Just (); _ -> Nothing) eKeyPressed
     eEnter =
       fmapMaybe (\case; "Enter" -> Just (); _ -> Nothing) eKeyPressed
+    eDelete =
+      fmapMaybe (\case; "Delete" -> Just (); _ -> Nothing) eKeyPressed
   rec
     dTerm <-
-      holdDyn
+      foldDyn
+        ($)
         (App (App (Var "f") (Var "x")) Hole)
-        ((\old action ->
-            case action of
-              InsertLam path info ->
-                case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) Path.empty) old of
-                  Left err -> Debug.traceShow err old
-                  Right (_, _, new) -> new
-              InsertApp path info ->
-                case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) Path.empty) old of
-                  Left err -> Debug.traceShow err old
-                  Right (_, _, new) -> new
-              Other{} -> old
-         ) <$>
-         current dTerm <@>
-         eMenuAction
+        (mergeWith (.)
+         [ (\action old ->
+              case action of
+                InsertLam path info ->
+                  case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) Path.empty) old of
+                    Left err -> Debug.traceShow err old
+                    Right (_, _, new) -> new
+                InsertApp path info ->
+                  case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) Path.empty) old of
+                    Left err -> Debug.traceShow err old
+                    Right (_, _, new) -> new
+                Other{} -> old
+           ) <$>
+           eMenuAction
+         , (\(Delete path) old ->
+              case Edit.edit path TargetTerm Edit.DeleteTerm old of
+                Left err -> Debug.traceShow err old
+                Right (_, _, new) -> new
+           ) <$>
+           eDeleteTerm
+         ]
         )
     dSelection <- holdDyn Nothing $ Just <$> eSelection
     eSelection :: Event t (View.Selection (Syntax.Term Text)) <-
@@ -282,7 +298,22 @@ app = do
         (fmap snd . viewTerm id empty dSelection)
         dTerm
     let
+      eDeleteTerm =
+        attachWithMaybe
+          (\(open, m_sel) _ ->
+             if open
+             then Nothing
+             else do
+               Some path <- m_sel
+               case targetInfo path of
+                 Left Refl -> undefined
+                 Right TargetTerm -> Just $ Delete path
+                 Right{} -> Nothing
+          )
+          ((,) <$> current dMenuOpen <*> current dSelection)
+          eDelete
+    let
       eOpenMenu = eSpace
       eCloseMenu = eEscape <> void eSelection <> void eMenuAction
-    eMenuAction <- menu eOpenMenu eCloseMenu eNextItem eEnter dSelection
+    (dMenuOpen, eMenuAction) <- menu eOpenMenu eCloseMenu eNextItem eEnter dSelection
   pure ()

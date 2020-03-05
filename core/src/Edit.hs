@@ -21,11 +21,9 @@ data Action a b where
 
 data EditError where
   InvalidPath :: Path a b -> a -> EditError
-  InsertNonHole :: Path a b -> b -> EditError
 
 instance Show EditError where
   show InvalidPath{} = "InvalidPath"
-  show InsertNonHole{} = "InsertNonHole"
 
 edit ::
   forall src tgt tgt'.
@@ -37,19 +35,11 @@ edit ::
 edit path TargetTerm action a =
   -- path : Path a (Term x)
   -- action : Edit (Term x) c
-  let
-    replaceHoleWith :: tgt -> tgt -> Either EditError tgt
-    replaceHoleWith new old =
-      case old of
-        Syntax.Hole -> Right new
-        b -> Left $ InsertNonHole path b
-  in
   case action of
     InsertTerm tm suffix ->
-      case Path.modifyA path (replaceHoleWith tm) a of
-        Left err -> Left err
-        Right Nothing -> Left $ InvalidPath path a
-        Right (Just a') ->
+      case Path.set path tm a of
+        Nothing -> Left $ InvalidPath path a
+        Just a' ->
           case targetInfo suffix of
             Left Refl -> Right (Path.append path suffix, TargetTerm, a')
             Right info -> Right (Path.append path suffix, info, a')
@@ -66,19 +56,11 @@ edit path TargetIdent action a =
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (path, TargetIdent, a')
 edit path TargetType action a =
-  let
-    replaceHoleWith :: tgt -> tgt -> Either EditError tgt
-    replaceHoleWith new old =
-      case old of
-        Syntax.THole -> Right new
-        b -> Left $ InsertNonHole path b
-  in
   case action of
     InsertType ty suffix ->
-      case Path.modifyA path (replaceHoleWith ty) a of
-        Left err -> Left err
-        Right Nothing -> Left $ InvalidPath path a
-        Right (Just a') ->
+      case Path.set path ty a of
+        Nothing -> Left $ InvalidPath path a
+        Just a' ->
           case targetInfo suffix of
             Left Refl -> Right (Path.append path suffix, TargetType, a')
             Right info -> Right (Path.append path suffix, info, a')
