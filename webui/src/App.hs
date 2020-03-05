@@ -14,8 +14,11 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import Data.Void (absurd)
 import GHCJS.DOM.EventM (on, event, preventDefault)
+import GHCJS.DOM.HTMLElement (HTMLElement)
+import qualified GHCJS.DOM.HTMLElement as HTMLElement
 import qualified GHCJS.DOM.GlobalEventHandlers as Events
 import qualified JSDOM.Generated.KeyboardEvent as KeyboardEvent
+import JSDOM.Types (liftJSM, toJSVal, fromJSValUnchecked)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex.Dom hiding (preventDefault)
 
@@ -61,14 +64,27 @@ keyPressed = do
         eKeyDown
   pure eKeyPressed
 
-menuInput :: DomBuilder t m => m ()
-menuInput =
-  elAttr "input"
-    ("type" =: "text" <> "class" =: "input")
-    (pure ())
+menuInput ::
+  ( DomBuilder t m
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , MonadJSM m
+  ) =>
+  m ()
+menuInput = do
+  (theInput, _) <-
+    elAttr' "input"
+      ("type" =: "text" <> "class" =: "input")
+      (pure ())
+  inputElement :: HTMLElement <-
+    liftJSM $
+    fromJSValUnchecked =<< toJSVal (_element_raw theInput)
+  HTMLElement.focus inputElement
 
 menu ::
-  (MonadHold t m, DomBuilder t m) =>
+  ( MonadHold t m, DomBuilder t m
+  , DomBuilderSpace m ~ GhcjsDomSpace
+  , MonadJSM m
+  ) =>
   Event t () ->
   Event t () ->
   Dynamic t (Maybe (View.Selection (Syntax.Term a))) ->
@@ -83,7 +99,7 @@ menu eOpen eClose dSelection =
            Nothing -> undefined
            Just tInfo ->
              elAttr "div" ("style" =: "position: absolute" <> "class" =: "box") $ do
-               el "div" menuInput
+               el' "div" menuInput
                text $ case tInfo of
                  TargetTerm -> "term menu"
                  TargetType -> "type menu"
