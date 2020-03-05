@@ -17,6 +17,17 @@ main =
            "rel"=:"stylesheet"
           )
           (pure ())
+        elAttr "link"
+          ("href"=:"https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css" <>
+           "rel"=:"stylesheet"
+          )
+          (pure ())
+        elAttr "script"
+          ("defer" =: mempty <>
+           "src" =: "https://use.fontawesome.com/releases/v5.3.1/js/all.js"
+          )
+          (pure ())
         el "style" . text $ toStrict cssText
+
     )
     app

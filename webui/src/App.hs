@@ -36,7 +36,6 @@ keyPressed = do
   document <- askDocument
   eKeyDown :: Event t Text <-
     wrapDomEvent document (`on` Events.keyDown) $ do
-      preventDefault
       ev <- event
       lift (KeyboardEvent.getCode ev)
   eKeyUp :: Event t Text <-
@@ -62,6 +61,12 @@ keyPressed = do
         eKeyDown
   pure eKeyPressed
 
+menuInput :: DomBuilder t m => m ()
+menuInput =
+  elAttr "input"
+    ("type" =: "text" <> "class" =: "input")
+    (pure ())
+
 menu ::
   (MonadHold t m, DomBuilder t m) =>
   Event t () ->
@@ -77,11 +82,12 @@ menu eOpen eClose dSelection =
          case targetInfo path of
            Nothing -> undefined
            Just tInfo ->
-             elAttr "div" ("style" =: "display: float; border: 1px solid black") $
-             text $ case tInfo of
-               TargetTerm -> "term menu"
-               TargetType -> "type menu"
-               TargetIdent -> "ident menu"
+             elAttr "div" ("style" =: "position: absolute" <> "class" =: "box") $ do
+               el "div" menuInput
+               text $ case tInfo of
+                 TargetTerm -> "term menu"
+                 TargetType -> "type menu"
+                 TargetIdent -> "ident menu"
       ) <$>
     current dSelection <@ eOpen
   , pure () <$ eClose
