@@ -66,7 +66,7 @@ viewTerm name path dmSelection tm = do
         "span"
         ((\hovered selected clicking ->
             classes $
-            [ Style.focusable, Style.node ] <>
+            [ Style.code, Style.focusable, Style.node ] <>
             [ Style.selected | selected ] <>
             [ Style.hovered | hovered ] <>
             [ Style.clicking | clicking ] <>

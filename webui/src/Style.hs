@@ -35,6 +35,9 @@ leaf = Class "leaf"
 clicking :: Class
 clicking = Class "clicking"
 
+code :: Class
+code = Class "code"
+
 activeLight :: Color
 activeLight = Rgba 150 150 150 0.3
 
@@ -43,7 +46,7 @@ activeDark = Rgba 0 0 0 0.45
 
 css :: Css
 css = do
-  Clay.span ? do
+  byClass (unClass Style.code) & do
     fontFamily ["Source Code Pro"] [monospace]
   byClass (unClass focusable) & do
     let fade prop = transition prop 0.25 ease 0
