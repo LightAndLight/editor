@@ -67,21 +67,30 @@ keyPressed = do
 menuInput ::
   ( DomBuilder t m
   , DomBuilderSpace m ~ GhcjsDomSpace
+  , PostBuild t m, TriggerEvent t m
+  , PerformEvent t m, MonadJSM (Performable m)
   , MonadJSM m
   ) =>
   m ()
 menuInput = do
   (theInput, _) <-
     elAttr' "input"
-      ("type" =: "text" <> "class" =: "input")
+      ("type" =: "text" <> "class" =: "input" <> "id" =: "blaaah")
       (pure ())
-  inputElement :: HTMLElement <-
-    liftJSM $
-    fromJSValUnchecked =<< toJSVal (_element_raw theInput)
-  HTMLElement.focus inputElement
+  ePostBuild <- delay 0.05 =<< getPostBuild
+  performEvent_ $
+    (do
+       inputElement :: HTMLElement <-
+         liftJSM $
+         fromJSValUnchecked =<< toJSVal (_element_raw theInput)
+       HTMLElement.focus inputElement
+    ) <$
+    ePostBuild
 
 menu ::
   ( MonadHold t m, DomBuilder t m
+  , PostBuild t m, TriggerEvent t m
+  , PerformEvent t m, MonadJSM (Performable m)
   , DomBuilderSpace m ~ GhcjsDomSpace
   , MonadJSM m
   ) =>
@@ -112,7 +121,7 @@ menu eOpen eClose dSelection =
 app ::
   forall t m.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
-  , PerformEvent t m, MonadIO (Performable m)
+  , PerformEvent t m, MonadJSM (Performable m)
   , HasDocument m, MonadJSM m, TriggerEvent t m
   , DomBuilderSpace m ~ GhcjsDomSpace
   ) =>
