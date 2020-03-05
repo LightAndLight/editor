@@ -33,6 +33,7 @@ import Reflex.Dom hiding (Delete, preventDefault)
 
 import qualified Edit
 import Path (Path, TargetInfo(..), targetInfo, cons, empty)
+import qualified Path
 import qualified Style
 import Syntax
 import View (viewTerm)
@@ -265,33 +266,37 @@ app = do
     eDelete =
       fmapMaybe (\case; "Delete" -> Just (); _ -> Nothing) eKeyPressed
   rec
-    dTerm <-
+    dPathTerm <-
       foldDyn
         ($)
-        (App (App (Var "f") (Var "x")) Hole)
+        (Some Path.empty, App (App (Var "f") (Var "x")) Hole)
         (mergeWith (.)
-         [ (\action old ->
+         [ (\action (Some oldPath, old) ->
               case action of
                 InsertLam path info ->
-                  case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) Path.empty) old of
-                    Left err -> Debug.traceShow err old
-                    Right (_, _, new) -> new
+                  case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) old of
+                    Left err -> Debug.traceShow err (Some oldPath, old)
+                    Right (newPath, _, new) -> (Some newPath, new)
                 InsertApp path info ->
-                  case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) Path.empty) old of
-                    Left err -> Debug.traceShow err old
-                    Right (_, _, new) -> new
-                Other{} -> old
+                  case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
+                    Left err -> Debug.traceShow err (Some oldPath, old)
+                    Right (newPath, _, new) -> (Some newPath, new)
+                Other{} -> (Some oldPath, old)
            ) <$>
            eMenuAction
-         , (\(Delete path) old ->
+         , (\(Delete path) (Some oldPath, old) ->
               case Edit.edit path TargetTerm Edit.DeleteTerm old of
-                Left err -> Debug.traceShow err old
-                Right (_, _, new) -> new
+                Left err -> Debug.traceShow err (Some oldPath, old)
+                Right (newPath, _, new) -> (Some newPath, new)
            ) <$>
            eDeleteTerm
          ]
         )
-    dSelection <- holdDyn Nothing $ Just <$> eSelection
+    let dPath = fst <$> dPathTerm
+    let dTerm = snd <$> dPathTerm
+    dSelection <-
+      holdDyn Nothing $
+      leftmost [Just <$> updated dPath, Just <$> eSelection]
     eSelection :: Event t (View.Selection (Syntax.Term Text)) <-
       fmap switchDyn $
       bindDynamicM

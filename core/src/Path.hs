@@ -99,6 +99,9 @@ data Seq f a b where
 empty :: Seq f a a
 empty = Empty
 
+singleton :: f a b -> Seq f a b
+singleton = Single
+
 cons :: f a b -> Seq f b c -> Seq f a c
 cons a xs =
   case xs of
