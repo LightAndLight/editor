@@ -1,4 +1,5 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# language FlexibleContexts #-}
 {-# language GeneralizedNewtypeDeriving #-}
 {-# language TemplateHaskell #-}
 module Syntax where
@@ -26,17 +27,21 @@ makeBound ''Type
 instance Eq a => Eq (Type a) where; (==) = eq1
 instance Show a => Show (Type a) where; showsPrec = showsPrec1
 
-data Term a
+data Term ty a
   = Hole
   | Var a
-  | App (Term a) (Term a)
-  | Lam Name (Scope () Term a)
+  | App (Term ty a) (Term ty a)
+  | Lam Name (Scope () (Term ty) a)
+  | LamAnn Name (Type ty) (Scope () (Term ty) a)
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Term
 deriveShow1 ''Term
 makeBound ''Term
-instance Eq a => Eq (Term a) where; (==) = eq1
-instance Show a => Show (Term a) where; showsPrec = showsPrec1
+instance (Eq ty, Eq a) => Eq (Term ty a) where; (==) = eq1
+instance (Show ty, Show a) => Show (Term ty a) where; showsPrec = showsPrec1
 
-_Lam :: Text -> Term (Bound.Var () a) -> Term a
-_Lam x = Lam (Name x) . Bound.toScope
+_Lam :: Text -> Maybe (Type ty) -> Term ty (Bound.Var () a) -> Term ty a
+_Lam x mty =
+  case mty of
+    Nothing -> Lam (Name x) . Bound.toScope
+    Just ty -> LamAnn (Name x) ty . Bound.toScope

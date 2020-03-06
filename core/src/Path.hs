@@ -15,11 +15,14 @@ import Syntax (Name, Term, Type)
 import qualified Syntax
 
 data P a b where
-  AppL :: P (Term a) (Term a)
-  AppR :: P (Term a) (Term a)
-  Var :: P (Term a) a
-  LamArg :: P (Term a) Name
-  LamBody :: P (Term a) (Term (Var () a))
+  AppL :: P (Term ty a) (Term ty a)
+  AppR :: P (Term ty a) (Term ty a)
+  Var :: P (Term ty a) a
+  LamArg :: P (Term ty a) Name
+  LamBody :: P (Term ty a) (Term ty (Var () a))
+  LamAnnArg :: P (Term ty a) Name
+  LamAnnType :: P (Term ty a) (Type ty)
+  LamAnnBody :: P (Term ty a) (Term ty (Var () a))
 
   TVar :: P (Type a) a
   TForallArg :: P (Type a) Name
@@ -68,6 +71,21 @@ matchP p a =
       case a of
         Syntax.Lam n x ->
           Just (Bound.fromScope x, Syntax.Lam n . Bound.toScope)
+        _ -> Nothing
+    LamAnnArg ->
+      case a of
+        Syntax.LamAnn n ty x ->
+          Just (n, \n' -> Syntax.LamAnn n' ty x)
+        _ -> Nothing
+    LamAnnType ->
+      case a of
+        Syntax.LamAnn n ty x ->
+          Just (ty, \ty' -> Syntax.LamAnn n ty' x)
+        _ -> Nothing
+    LamAnnBody ->
+      case a of
+        Syntax.LamAnn n ty x ->
+          Just (Bound.fromScope x, Syntax.LamAnn n ty . Bound.toScope)
         _ -> Nothing
     TVar ->
       case a of
@@ -288,7 +306,7 @@ viewr s =
         Four a b c d -> Deep l m (Three a b c) :> d
 
 data TargetInfo b where
-  TargetTerm :: TargetInfo (Term v)
+  TargetTerm :: TargetInfo (Term ty v)
   TargetType :: TargetInfo (Type v)
   TargetName :: TargetInfo Name
 
@@ -319,6 +337,9 @@ targetInfo ps =
         Var -> undefined
         LamArg -> TargetName
         LamBody -> TargetTerm
+        LamAnnArg -> TargetName
+        LamAnnType -> TargetType
+        LamAnnBody -> TargetTerm
         TVar -> undefined
         TForallArg -> TargetName
         TForallBody -> TargetType

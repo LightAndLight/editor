@@ -1,4 +1,5 @@
 {-# language GADTs, StandaloneDeriving #-}
+{-# language ScopedTypeVariables #-}
 module Typecheck where
 
 import qualified Bound
@@ -13,34 +14,34 @@ import Syntax
 data TypeError
   = NotInScope Name
   | ExpectedArr (Type Name)
-  | Can'tInfer (Term Name)
-  | NotTArr (Term Name)
+  | Can'tInfer (Term Name Name)
+  | NotTArr (Term Name Name)
   | TypeMismatch (Type Name) (Type Name)
   deriving Show
 
-data Holes tm where
+data Holes ty tm where
   Cons ::
-    Show ty =>
-    Path (Term tm) (Term tm') ->
-    Type ty ->
-    Holes tm ->
-    Holes tm
-  Nil :: Holes tm
-deriving instance Show tm => Show (Holes tm)
+    Show ty' =>
+    Path (Term ty tm) (Term ty' tm') ->
+    Type ty' ->
+    Holes ty tm ->
+    Holes ty tm
+  Nil :: Holes ty tm
+deriving instance (Show ty, Show tm) => Show (Holes ty tm)
 
 updateHole ::
-  Show ty =>
-  Path (Term tm) (Term v) ->
-  Type ty ->
-  Holes tm ->
-  Holes tm
+  Show ty' =>
+  Path (Term ty tm) (Term ty' v) ->
+  Type ty' ->
+  Holes ty tm ->
+  Holes ty tm
 updateHole _ _ Nil = Nil
 updateHole p t (Cons p' t' rest) =
   if Path.eqPath p p'
   then Cons p' t (updateHole p t rest)
   else Cons p' t' (updateHole p t rest)
 
-appendHoles :: Holes tm -> Holes tm -> Holes tm
+appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
 appendHoles Nil a = a
 appendHoles (Cons a b c) d = Cons a b $ appendHoles c d
 
@@ -49,10 +50,10 @@ check ::
   (tm -> Name) ->
   (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
-  Path (Term x) (Term tm) ->
-  Term tm ->
+  Path (Term y x) (Term ty tm) ->
+  Term ty tm ->
   Type ty ->
-  Either TypeError (Holes x)
+  Either TypeError (Holes y x)
 check name nameTy ctx path tm ty =
   case ty of
     TForall n rest ->
@@ -84,16 +85,17 @@ check name nameTy ctx path tm ty =
           pure holes
 
 infer ::
+  forall y x ty tm.
   (Eq ty, Show ty) =>
   (tm -> Name) ->
   (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
-  Path (Term x) (Term tm) ->
-  Term tm ->
-  Either TypeError (Type ty, Holes x)
+  Path (Term y x) (Term ty tm) ->
+  Term ty tm ->
+  Either TypeError (Type ty, Holes x y)
 infer name nameTy ctx path tm =
   case tm of
-    Hole -> pure (THole, Cons path (THole :: Type Void) Nil)
+    Hole -> pure (THole, Cons path (THole :: Type ty) Nil)
     Var a ->
       case ctx a of
         Nothing -> Left $ NotInScope (name a)
@@ -111,7 +113,7 @@ infer name nameTy ctx path tm =
           pure
             ( THole
             , appendHoles
-                (updateHole fPath (TArr THole THole :: Type Void) fHoles)
+                (updateHole fPath (TArr THole THole :: Type ty) fHoles)
                 xHoles
             )
         _ -> Left . ExpectedArr $ nameTy <$> fTy

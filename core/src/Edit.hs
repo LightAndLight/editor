@@ -12,8 +12,8 @@ import Path (Path, TargetInfo(..), targetInfo)
 import qualified Path
 
 data Action a b where
-  InsertTerm :: Term a -> Path (Term a) b -> Action (Term a) b
-  DeleteTerm :: Action (Term a) (Term a)
+  InsertTerm :: Term ty a -> Path (Term ty a) b -> Action (Term ty a) b
+  DeleteTerm :: Action (Term ty a) (Term ty a)
   ModifyName :: (Name -> Name) -> Action Name Name
   InsertType :: Type a -> Path (Type a) b -> Action (Type a) b
   DeleteType :: Action (Type a) (Type a)
