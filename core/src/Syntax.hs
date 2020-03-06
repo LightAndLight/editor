@@ -21,7 +21,7 @@ newtype Name = Name { unName :: Text }
   deriving (Eq, Show, IsString)
 
 data Type a
-  = THole
+  = THole Int
   | TVar a
   | TForall Name (Scope () Type a)
   | TArr (Type a) (Type a)

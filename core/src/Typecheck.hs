@@ -1,3 +1,4 @@
+{-# language FlexibleContexts #-}
 {-# language GADTs, StandaloneDeriving #-}
 {-# language ScopedTypeVariables #-}
 module Typecheck where
@@ -5,6 +6,8 @@ module Typecheck where
 import qualified Bound
 import Bound.Var (unvar)
 import Control.Monad (unless)
+import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.State (MonadState, gets, modify)
 import Data.Bifunctor (bimap)
 import Data.Type.Equality ((:~:)(..))
 
@@ -46,15 +49,25 @@ appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
 appendHoles Nil a = a
 appendHoles (Cons a b c) d = Cons a b $ appendHoles c d
 
+data TCState
+  = TCState
+  { _tcSupply :: Int
+  }
+
+freshMeta :: MonadState TCState m => m Int
+freshMeta = do
+  n <- gets _tcSupply
+  n <$ modify (\tc -> tc { _tcSupply = n + 1 })
+
 check ::
-  (Eq ty, Show ty) =>
+  (Eq ty, Show ty, MonadState TCState m, MonadError TypeError m) =>
   (tm -> Name) ->
   (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
   Path (Term y x) (Term ty tm) ->
   Term ty tm ->
   Type ty ->
-  Either TypeError (Holes y x)
+  m (Holes y x)
 check name nameTy ctx path tm ty =
   case ty of
 {-
@@ -77,31 +90,33 @@ check name nameTy ctx path tm ty =
             (Path.snoc path Path.LamBody)
             (Bound.fromScope body)
             b
-        _ -> Left . NotTArr $ bimap nameTy name tm
+        _ -> throwError . NotTArr $ bimap nameTy name tm
     _ -> do
       (ty', holes) <- infer name nameTy ctx path tm
       case ty' of
-        THole -> pure $ updateHole path ty holes
+        THole n -> pure $ updateHole path ty holes
         _ -> do
-          unless (ty == ty') . Left $
+          unless (ty == ty') . throwError $
             TypeMismatch (nameTy <$> ty) (nameTy <$> ty')
           pure holes
 
 infer ::
-  forall y x ty tm.
-  (Eq ty, Show ty) =>
+  forall y x ty tm m.
+  (Eq ty, Show ty, MonadState TCState m, MonadError TypeError m) =>
   (tm -> Name) ->
   (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
   Path (Term y x) (Term ty tm) ->
   Term ty tm ->
-  Either TypeError (Type ty, Holes y x)
+  m (Type ty, Holes y x)
 infer name nameTy ctx path tm =
   case tm of
-    Hole -> pure (THole, Cons path (THole :: Type ty) Nil)
+    Hole -> do
+      t <- THole <$> freshMeta
+      pure (t, Cons path (t :: Type ty) Nil)
     Var a ->
       case ctx a of
-        Nothing -> Left $ NotInScope (name a)
+        Nothing -> throwError $ NotInScope (name a)
         Just ty -> pure (ty, Nil)
     LamAnn n ty body -> do
       let bodyPath = Path.snoc path Path.LamAnnBody
@@ -121,13 +136,15 @@ infer name nameTy ctx path tm =
         TArr a b -> do
           xHoles <- check name nameTy ctx xPath x a
           pure (b, appendHoles fHoles xHoles)
-        THole -> do
-          xHoles <- check name nameTy ctx xPath x THole
+        THole n -> do
+          t1 <- THole <$> freshMeta
+          t2 <- THole <$> freshMeta
+          xHoles <- check name nameTy ctx xPath x t1
           pure
-            ( THole
+            ( t2
             , appendHoles
-                (updateHole fPath (TArr THole THole :: Type ty) fHoles)
+                (updateHole fPath (TArr t1 t2 :: Type ty) fHoles)
                 xHoles
             )
-        _ -> Left . ExpectedArr $ nameTy <$> fTy
-    _ -> Left . Can'tInfer $ bimap nameTy name tm
+        _ -> throwError . ExpectedArr $ nameTy <$> fTy
+    _ -> throwError . Can'tInfer $ bimap nameTy name tm
