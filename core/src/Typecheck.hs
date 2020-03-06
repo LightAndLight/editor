@@ -3,10 +3,10 @@
 module Typecheck where
 
 import qualified Bound
-import Bound.Var (Var(..), unvar)
+import Bound.Var (unvar)
 import Control.Monad (unless)
-import Data.Bifunctor (bimap, first)
-import Data.Void (Void)
+import Data.Bifunctor (bimap)
+import Data.Type.Equality ((:~:)(..))
 
 import Path (Path)
 import qualified Path
@@ -38,9 +38,9 @@ updateHole ::
   Holes ty tm
 updateHole _ _ Nil = Nil
 updateHole p t (Cons p' t' rest) =
-  if Path.eqPath p p'
-  then Cons p' t (updateHole p t rest)
-  else Cons p' t' (updateHole p t rest)
+  case Path.eqPath p p' of
+    Nothing -> Cons p' t' (updateHole p t rest)
+    Just Refl -> Cons p' t (updateHole p t rest)
 
 appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
 appendHoles Nil a = a
@@ -57,14 +57,16 @@ check ::
   Either TypeError (Holes y x)
 check name nameTy ctx path tm ty =
   case ty of
+{-
     TForall n rest ->
       check
         name
         (unvar (\() -> n) nameTy)
         ((fmap.fmap) F . ctx)
         (_ path)
-        (_ $ tm)
+        (_ tm)
         (Bound.fromScope rest)
+-}
     TArr a b ->
       case tm of
         Lam n body ->
@@ -101,6 +103,16 @@ infer name nameTy ctx path tm =
       case ctx a of
         Nothing -> Left $ NotInScope (name a)
         Just ty -> pure (ty, Nil)
+    LamAnn n ty body -> do
+      let bodyPath = Path.snoc path Path.LamAnnBody
+      (bodyTy, bodyHoles) <-
+        infer
+          (unvar (\() -> n) name)
+          nameTy
+          (unvar (\() -> Just ty) ctx)
+          bodyPath
+          (Bound.fromScope body)
+      pure (Syntax.TArr ty bodyTy, bodyHoles)
     App f x -> do
       let fPath = Path.snoc path Path.AppL
       let xPath = Path.snoc path Path.AppR

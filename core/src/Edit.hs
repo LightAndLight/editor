@@ -13,6 +13,10 @@ import qualified Path
 
 data Action a b where
   InsertTerm :: Term ty a -> Path (Term ty a) b -> Action (Term ty a) b
+  ModifyTerm ::
+    (Term ty a -> Term ty a) ->
+    Path (Term ty a) b ->
+    Action (Term ty a) b
   DeleteTerm :: Action (Term ty a) (Term ty a)
   ModifyName :: (Name -> Name) -> Action Name Name
   InsertType :: Type a -> Path (Type a) b -> Action (Type a) b
@@ -37,6 +41,13 @@ edit path TargetTerm action a =
   case action of
     InsertTerm tm suffix ->
       case Path.set path tm a of
+        Nothing -> Left $ InvalidPath path a
+        Just a' ->
+          case targetInfo suffix of
+            Left Refl -> Right (Path.append path suffix, TargetTerm, a')
+            Right info -> Right (Path.append path suffix, info, a')
+    ModifyTerm f suffix ->
+      case Path.modify path f a of
         Nothing -> Left $ InvalidPath path a
         Just a' ->
           case targetInfo suffix of

@@ -31,18 +31,18 @@ data P a b where
   TArrR :: P (Type a) (Type a)
 deriving instance Show (P a b)
 
-eqP :: P a b -> P c d -> Bool
-eqP AppL AppL = True
-eqP AppR AppR = True
-eqP Var Var = True
-eqP LamArg LamArg = True
-eqP LamBody LamBody = True
-eqP TVar TVar = True
-eqP TForallArg TForallArg = True
-eqP TForallBody TForallBody = True
-eqP TArrL TArrL = True
-eqP TArrR TArrR = True
-eqP _ _ = False
+eqP :: P a b -> P a d -> Maybe (b :~: d)
+eqP AppL AppL = Just Refl
+eqP AppR AppR = Just Refl
+eqP Var Var = Just Refl
+eqP LamArg LamArg = Just Refl
+eqP LamBody LamBody = Just Refl
+eqP TVar TVar = Just Refl
+eqP TForallArg TForallArg = Just Refl
+eqP TForallBody TForallBody = Just Refl
+eqP TArrL TArrL = Just Refl
+eqP TArrR TArrR = Just Refl
+eqP _ _ = Nothing
 
 matchP :: P a b -> a -> Maybe (b, b -> a)
 matchP p a =
@@ -312,18 +312,20 @@ data TargetInfo b where
 
 type Path = Seq P
 
-eqPath :: Path a b -> Path c d -> Bool
+eqPath :: Path a b -> Path a d -> Maybe (b :~: d)
 eqPath pa pb =
   case viewl pa of
     EmptyL ->
       case viewl pb of
-        EmptyL -> True
-        _ -> False
+        EmptyL -> Just Refl
+        _ -> Nothing
     a :< as ->
       case viewl pb of
-        EmptyL -> False
-        b :< bs ->
-          eqP a b && eqPath as bs
+        EmptyL -> Nothing
+        b :< bs -> do
+          Refl <- eqP a b
+          Refl <- eqPath as bs
+          pure Refl
 
 targetInfo :: Path a b -> Either (a :~: b) (TargetInfo b)
 targetInfo ps =

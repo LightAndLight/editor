@@ -1,7 +1,7 @@
 {-# language GADTs #-}
 module Zipper where
 
-import Path (P)
+import Path (Path, P, ViewL(..))
 import qualified Path
 
 newtype Entry a b where
@@ -36,3 +36,9 @@ down :: P b c -> Zipper a b -> Maybe (Zipper a c)
 down p (Zipper history focus) =
   (\(entry, focus') -> Zipper (Snoc history entry) focus') <$>
   down1 p focus
+
+downTo :: Path b c -> Zipper a b -> Maybe (Zipper a c)
+downTo path z =
+  case Path.viewl path of
+    EmptyL -> Just z
+    p :< ps -> down p z >>= downTo ps
