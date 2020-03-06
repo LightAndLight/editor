@@ -4,10 +4,9 @@
 {-# language ScopedTypeVariables #-}
 module Edit where
 
-import Data.Text (Text)
 import Data.Type.Equality ((:~:)(..))
 
-import Syntax (Term, Type)
+import Syntax (Name, Term, Type)
 import qualified Syntax
 import Path (Path, TargetInfo(..), targetInfo)
 import qualified Path
@@ -15,7 +14,7 @@ import qualified Path
 data Action a b where
   InsertTerm :: Term a -> Path (Term a) b -> Action (Term a) b
   DeleteTerm :: Action (Term a) (Term a)
-  ModifyIdent :: (Text -> Text) -> Action Text Text
+  ModifyName :: (Name -> Name) -> Action Name Name
   InsertType :: Type a -> Path (Type a) b -> Action (Type a) b
   DeleteType :: Action (Type a) (Type a)
 
@@ -47,14 +46,14 @@ edit path TargetTerm action a =
       case Path.set path Syntax.Hole a of
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (path, TargetTerm, a')
-edit path TargetIdent action a =
+edit path TargetName action a =
   -- path : Path a Text
   -- action : Edit Text c
   case action of
-    ModifyIdent f ->
+    ModifyName f ->
       case Path.modify path f a of
         Nothing -> Left $ InvalidPath path a
-        Just a' -> Right (path, TargetIdent, a')
+        Just a' -> Right (path, TargetName, a')
 edit path TargetType action a =
   case action of
     InsertType ty suffix ->

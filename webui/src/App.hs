@@ -155,7 +155,7 @@ menuItems eNextItem path info = do
           pure $ constDyn [InsertApp path info, InsertLam path info]
         TargetType ->
           pure $ constDyn [Other "thing4", Other "thing5", Other "thing6"]
-        TargetIdent ->
+        TargetName ->
           pure $ constDyn [Other "thing7", Other "thing7", Other "thing9"]
   pure (dSelection, dItems)
 
@@ -297,10 +297,10 @@ app = do
     dSelection <-
       holdDyn Nothing $
       leftmost [Just <$> updated dPath, Just <$> eSelection]
-    eSelection :: Event t (View.Selection (Syntax.Term Text)) <-
+    eSelection :: Event t (View.Selection (Syntax.Term Name)) <-
       fmap switchDyn $
       bindDynamicM
-        (fmap snd . viewTerm id empty dSelection)
+        (fmap View._nodeFocus . viewTerm id empty dSelection)
         dTerm
     let
       eDeleteTerm =

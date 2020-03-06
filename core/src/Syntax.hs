@@ -1,4 +1,5 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# language GeneralizedNewtypeDeriving #-}
 {-# language TemplateHaskell #-}
 module Syntax where
 
@@ -8,11 +9,15 @@ import Bound.TH (makeBound)
 import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Classes (eq1, showsPrec1)
 import Data.Text (Text)
+import GHC.Exts (IsString)
+
+newtype Name = Name { unName :: Text }
+  deriving (Eq, Show, IsString)
 
 data Type a
   = THole
   | TVar a
-  | TForall Text (Scope () Type a)
+  | TForall Name (Scope () Type a)
   | TArr (Type a) (Type a)
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Type
@@ -25,7 +30,7 @@ data Term a
   = Hole
   | Var a
   | App (Term a) (Term a)
-  | Lam Text (Scope () Term a)
+  | Lam Name (Scope () Term a)
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Term
 deriveShow1 ''Term
@@ -34,4 +39,4 @@ instance Eq a => Eq (Term a) where; (==) = eq1
 instance Show a => Show (Term a) where; showsPrec = showsPrec1
 
 _Lam :: Text -> Term (Bound.Var () a) -> Term a
-_Lam x = Lam x . Bound.toScope
+_Lam x = Lam (Name x) . Bound.toScope

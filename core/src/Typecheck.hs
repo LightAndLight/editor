@@ -3,21 +3,20 @@ module Typecheck where
 import qualified Bound
 import Bound.Var (Var(..), unvar)
 import Control.Monad (unless)
-import Data.Text (Text)
 
 import Syntax
 
 data TypeError
-  = NotInScope Text
-  | ExpectedArr (Type Text)
-  | Can'tInfer (Term Text)
-  | NotTArr (Term Text)
-  | TypeMismatch (Type Text) (Type Text)
+  = NotInScope Name
+  | ExpectedArr (Type Name)
+  | Can'tInfer (Term Name)
+  | NotTArr (Term Name)
+  | TypeMismatch (Type Name) (Type Name)
 
 check ::
   Eq ty =>
-  (tm -> Text) ->
-  (ty -> Text) ->
+  (tm -> Name) ->
+  (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
   Term tm ->
   Type ty ->
@@ -42,8 +41,8 @@ check name nameTy ctx tm ty =
 
 infer ::
   Eq ty =>
-  (tm -> Text) ->
-  (ty -> Text) ->
+  (tm -> Name) ->
+  (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
   Term tm ->
   Either TypeError (Type ty)

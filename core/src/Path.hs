@@ -8,21 +8,20 @@ import Bound.Var (Var)
 import Data.Functor.Const (Const(..))
 import Data.Functor.Identity (Identity(..))
 import Data.Monoid (First(..))
-import Data.Text (Text)
 import Data.Type.Equality ((:~:)(..))
 
-import Syntax (Term, Type)
+import Syntax (Name, Term, Type)
 import qualified Syntax
 
 data P a b where
   AppL :: P (Term a) (Term a)
   AppR :: P (Term a) (Term a)
   Var :: P (Term a) a
-  LamArg :: P (Term a) Text
+  LamArg :: P (Term a) Name
   LamBody :: P (Term a) (Term (Var () a))
 
   TVar :: P (Type a) a
-  TForallArg :: P (Type a) Text
+  TForallArg :: P (Type a) Name
   TForallBody :: P (Type a) (Type (Var () a))
   TArrL :: P (Type a) (Type a)
   TArrR :: P (Type a) (Type a)
@@ -265,7 +264,7 @@ viewr s =
 data TargetInfo b where
   TargetTerm :: TargetInfo (Term v)
   TargetType :: TargetInfo (Type v)
-  TargetIdent :: TargetInfo Text
+  TargetName :: TargetInfo Name
 
 type Path = Seq P
 
@@ -279,10 +278,10 @@ targetInfo ps =
         AppL -> TargetTerm
         AppR -> TargetTerm
         Var -> undefined
-        LamArg -> TargetIdent
+        LamArg -> TargetName
         LamBody -> TargetTerm
         TVar -> undefined
-        TForallArg -> TargetIdent
+        TForallArg -> TargetName
         TForallBody -> TargetType
         TArrL -> TargetType
         TArrR -> TargetType
