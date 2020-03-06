@@ -2,6 +2,7 @@
 {-# language GADTs #-}
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
+{-# language PackageImports #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 module View where
@@ -9,7 +10,7 @@ module View where
 import qualified Bound
 import Bound.Var (unvar)
 import Control.Monad.Fix (MonadFix)
-import Data.Some (Some(..))
+import "core" Data.Some (Some(..))
 import Reflex
 import Reflex.Dom
 

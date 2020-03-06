@@ -2,6 +2,7 @@
 {-# language GADTs #-}
 {-# language LambdaCase #-}
 {-# language OverloadedLists, OverloadedStrings #-}
+{-# language PackageImports #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language TypeFamilies #-}
@@ -13,7 +14,7 @@ import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Trans.Class (lift)
 import Data.Functor (void)
-import Data.Some (Some(..))
+import "core" Data.Some (Some(..))
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
