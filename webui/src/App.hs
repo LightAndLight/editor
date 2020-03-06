@@ -11,9 +11,7 @@ import qualified Debug.Trace as Debug
 
 import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
-import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Class (lift)
-import Data.Foldable (traverse_)
 import Data.Functor (void)
 import Data.Some (Some(..))
 import qualified Data.Set as Set
@@ -21,18 +19,19 @@ import Data.Text (Text)
 import Data.Type.Equality ((:~:)(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
-import Data.Void (absurd)
-import GHCJS.DOM.EventM (on, event, preventDefault)
+import GHCJS.DOM.EventM (on, event, eventTarget, preventDefault)
 import GHCJS.DOM.HTMLElement (HTMLElement)
+import GHCJS.DOM.HTMLInputElement (HTMLInputElement)
 import qualified GHCJS.DOM.HTMLElement as HTMLElement
+import qualified GHCJS.DOM.HTMLInputElement as HTMLInputElement
 import qualified GHCJS.DOM.GlobalEventHandlers as Events
-import qualified JSDOM.Generated.KeyboardEvent as KeyboardEvent
+import qualified GHCJS.DOM.KeyboardEvent as KeyboardEvent
 import JSDOM.Types (liftJSM, toJSVal, fromJSValUnchecked)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex.Dom hiding (Delete, preventDefault)
 
 import qualified Edit
-import Path (Path, TargetInfo(..), targetInfo, cons, empty)
+import Path (Path, TargetInfo(..), targetInfo, empty)
 import qualified Path
 import qualified Style
 import Syntax
@@ -81,13 +80,13 @@ keyPressed = do
   pure eKeyPressed
 
 menuInput ::
-  ( DomBuilder t m
+  ( MonadHold t m, DomBuilder t m
   , DomBuilderSpace m ~ GhcjsDomSpace
   , PostBuild t m, TriggerEvent t m
   , PerformEvent t m, MonadJSM (Performable m)
   , MonadJSM m
   ) =>
-  m ()
+  m (Dynamic t Text)
 menuInput = do
   (theInput, _) <-
     elAttr' "input"
@@ -96,16 +95,39 @@ menuInput = do
   ePostBuild <- delay 0.05 =<< getPostBuild
   performEvent_ $
     (do
-       inputElement :: HTMLElement <-
+       inputEl :: HTMLElement <-
          liftJSM $
          fromJSValUnchecked =<< toJSVal (_element_raw theInput)
-       HTMLElement.focus inputElement
+       HTMLElement.focus inputEl
     ) <$
     ePostBuild
+  eUpdated <-
+    fmap switchDyn .
+    widgetHold (pure never) $
+      (do
+         inputEl :: HTMLInputElement <-
+           liftJSM $
+           fromJSValUnchecked =<< toJSVal (_element_raw theInput)
+         wrapDomEvent
+           inputEl
+           (`on` Events.input)
+           (do
+              m_target <- eventTarget
+              case m_target of
+                Nothing -> pure Nothing
+                Just t -> do
+                  target :: HTMLInputElement <-
+                    liftJSM $ fromJSValUnchecked =<< toJSVal t
+                  Just <$> HTMLInputElement.getValue target
+           )
+      ) <$
+      ePostBuild
+  holdDyn "" $ fmapMaybe id eUpdated
 
 data MenuAction a where
   InsertLam :: Path a (Term v) -> TargetInfo (Term v) -> MenuAction a
   InsertApp :: Path a (Term v) -> TargetInfo (Term v) -> MenuAction a
+  InsertVar :: Path a Name -> TargetInfo Name -> Name -> MenuAction a
   Other :: Text -> MenuAction a
 
 data TermAction a where
@@ -120,6 +142,7 @@ renderMenuAction selected action =
   case action of
     InsertLam{} -> item "\\x -> _"
     InsertApp{} -> item "_ _"
+    InsertVar _ _ n -> item $ unName n
     Other str -> item str
   where
     item x = do
@@ -137,10 +160,11 @@ renderMenuAction selected action =
 menuItems ::
   (MonadHold t m, DomBuilder t m, MonadFix m) =>
   Event t () ->
+  Dynamic t Text ->
   Path a b ->
   TargetInfo b ->
   m (Dynamic t Int, Dynamic t (Vector (MenuAction a)))
-menuItems eNextItem path info = do
+menuItems eNextItem dInputText path info = do
   rec
     dSelection :: Dynamic t Int <-
       holdDyn 0 $
@@ -156,7 +180,7 @@ menuItems eNextItem path info = do
         TargetType ->
           pure $ constDyn [Other "thing4", Other "thing5", Other "thing6"]
         TargetName ->
-          pure $ constDyn [Other "thing7", Other "thing7", Other "thing9"]
+          pure $ (\n -> [InsertVar path info $ Name n]) <$> dInputText
   pure (dSelection, dItems)
 
 renderMenuActions ::
@@ -167,9 +191,9 @@ renderMenuActions ::
 renderMenuActions selected =
   Vector.ifoldr
     (\ix a rest -> do
-        e <- renderMenuAction (ix == selected) a
-        es <- rest
-        pure $ leftmost [ix <$ e, es]
+       e <- renderMenuAction (ix == selected) a
+       es <- rest
+       pure $ leftmost [ix <$ e, es]
     )
     (pure never)
 
@@ -199,8 +223,8 @@ menuForTarget ::
 menuForTarget eNextItem eEnter path target =
   elAttr "div" ("style" =: "position: absolute" <> "class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
-    elAttr "div" ("class" =: "dropdown-item") menuInput
-    (dSelection, dItems) <- menuItems eNextItem path target
+    dInputText <- elAttr "div" ("class" =: "dropdown-item") menuInput
+    (dSelection, dItems) <- menuItems eNextItem dInputText path target
     eItemClicked :: Event t Int <-
       fmap switchDyn $
       bindDynamicM
@@ -279,6 +303,10 @@ app = do
                     Right (newPath, _, new) -> (Some newPath, new)
                 InsertApp path info ->
                   case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
+                    Left err -> Debug.traceShow err (Some oldPath, old)
+                    Right (newPath, _, new) -> (Some newPath, new)
+                InsertVar path info n ->
+                  case Edit.edit path info (Edit.ModifyName $ const n) old of
                     Left err -> Debug.traceShow err (Some oldPath, old)
                     Right (newPath, _, new) -> (Some newPath, new)
                 Other{} -> (Some oldPath, old)

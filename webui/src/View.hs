@@ -9,13 +9,11 @@ module View where
 import qualified Bound
 import Bound.Var (unvar)
 import Control.Monad.Fix (MonadFix)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Text (Text)
 import Data.Some (Some(..))
 import Reflex
 import Reflex.Dom
 
-import Path (Path, P(..), ViewL(..), viewl, snoc, empty)
+import Path (Path, P(..), ViewL(..), viewl, snoc)
 import Style (classes)
 import qualified Style
 import qualified Syntax
@@ -55,8 +53,8 @@ viewName name path dmSelection v = do
         (\mSelection ->
            case mSelection of
              Nothing -> False
-             Just (Some path) ->
-               case viewl path of
+             Just (Some path') ->
+               case viewl path' of
                  EmptyL -> True
                  _ :< _ -> False
         ) <$>
@@ -116,8 +114,8 @@ viewTerm name path dmSelection tm = do
         (\mSelection ->
            case mSelection of
              Nothing -> False
-             Just (Some path) ->
-               case viewl path of
+             Just (Some path') ->
+               case viewl path' of
                  EmptyL -> True
                  _ :< _ -> False
         ) <$>
@@ -202,7 +200,7 @@ viewTerm name path dmSelection tm = do
             { _nodeHovered = dH
             , _nodeFocus = leftmost [_nodeFocus aInfo, _nodeFocus bInfo]
             }
-        Syntax.Lam n e -> do
+        Syntax.Lam n body -> do
           text "\\"
           nInfo <-
             viewName
@@ -218,7 +216,7 @@ viewTerm name path dmSelection tm = do
               )
               n
           text "->"
-          eInfo <-
+          bodyInfo <-
             viewTerm
               (unvar (\() -> n) name)
               (snoc path LamBody)
@@ -231,13 +229,15 @@ viewTerm name path dmSelection tm = do
                ) <$>
                dmSelection
               )
-              (Bound.fromScope e)
+              (Bound.fromScope body)
 
-          dH <- holdUniqDyn $ (||) <$> _nodeHovered nInfo <*> _nodeHovered eInfo
+          dH <-
+            holdUniqDyn $
+            (||) <$> _nodeHovered nInfo <*> _nodeHovered bodyInfo
           pure $
             NodeInfo
             { _nodeHovered = dH
-            , _nodeFocus = leftmost [_nodeFocus nInfo, _nodeFocus eInfo]
+            , _nodeFocus = leftmost [_nodeFocus nInfo, _nodeFocus bodyInfo]
             }
   let eClicked = domEvent Click e
   dHoveredOrChild <-

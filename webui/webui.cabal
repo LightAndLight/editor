@@ -35,4 +35,5 @@ executable webui
                      , transformers >= 0.5
                      , vector
   hs-source-dirs:      src
+  ghc-options:         -Wall -Werror
   default-language:    Haskell2010

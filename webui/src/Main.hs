@@ -1,9 +1,8 @@
 {-# language OverloadedStrings #-}
 module Main where
 
-import Data.Text.Encoding (encodeUtf8)
 import Data.Text.Lazy (toStrict)
-import Reflex.Dom ((=:), run, mainWidgetWithHead, el, elAttr, text)
+import Reflex.Dom ((=:), mainWidgetWithHead, el, elAttr, text)
 
 import App (app)
 import Style (cssText)

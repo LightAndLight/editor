@@ -76,5 +76,5 @@ css = do
     let r = em 0.2
     borderRadius r r r r
     byClass (unClass leaf) & do
-      let p = em 0.15
-      padding p p p p
+      let pad = em 0.15
+      padding pad pad pad pad
