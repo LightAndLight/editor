@@ -45,7 +45,7 @@ appendHoles Nil a = a
 appendHoles (Cons a b c) d = Cons a b $ appendHoles c d
 
 check ::
-  Eq ty =>
+  (Eq ty, Show ty) =>
   (tm -> Name) ->
   (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
@@ -76,12 +76,15 @@ check name nameTy ctx path tm ty =
         _ -> Left . NotTArr $ name <$> tm
     _ -> do
       (ty', holes) <- infer name nameTy ctx path tm
-      unless (ty == ty') . Left $
-        TypeMismatch (nameTy <$> ty) (nameTy <$> ty')
-      pure holes
+      case ty' of
+        THole -> pure $ updateHole path ty holes
+        _ -> do
+          unless (ty == ty') . Left $
+            TypeMismatch (nameTy <$> ty) (nameTy <$> ty')
+          pure holes
 
 infer ::
-  Eq ty =>
+  (Eq ty, Show ty) =>
   (tm -> Name) ->
   (ty -> Name) ->
   (tm -> Maybe (Type ty)) ->
