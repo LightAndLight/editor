@@ -16,6 +16,7 @@ import Data.Functor (void)
 import Data.Some (Some(..))
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Type.Equality ((:~:)(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
@@ -35,6 +36,7 @@ import Path (Path, TargetInfo(..), targetInfo, empty)
 import qualified Path
 import qualified Style
 import Syntax
+import qualified Typecheck
 import View (viewTerm)
 import qualified View
 
@@ -348,5 +350,8 @@ app = do
     let
       eOpenMenu = eSpace
       eCloseMenu = eEscape <> void eSelection <> void eMenuAction
-    (dMenuOpen, eMenuAction) <- menu eOpenMenu eCloseMenu eNextItem eEnter dSelection
+    (dMenuOpen, eMenuAction) <-
+      menu eOpenMenu eCloseMenu eNextItem eEnter dSelection
+    let dType = Typecheck.infer id id (const Nothing) Path.empty <$> dTerm
+    dyn_ $ el "div" . text . Text.pack . show <$> dType
   pure ()

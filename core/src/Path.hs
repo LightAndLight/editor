@@ -1,3 +1,4 @@
+{-# language FlexibleInstances, StandaloneDeriving #-}
 {-# language GADTs #-}
 {-# language RankNTypes #-}
 {-# language TypeOperators #-}
@@ -25,6 +26,20 @@ data P a b where
   TForallBody :: P (Type a) (Type (Var () a))
   TArrL :: P (Type a) (Type a)
   TArrR :: P (Type a) (Type a)
+deriving instance Show (P a b)
+
+eqP :: P a b -> P c d -> Bool
+eqP AppL AppL = True
+eqP AppR AppR = True
+eqP Var Var = True
+eqP LamArg LamArg = True
+eqP LamBody LamBody = True
+eqP TVar TVar = True
+eqP TForallArg TForallArg = True
+eqP TForallBody TForallBody = True
+eqP TArrL TArrL = True
+eqP TArrR TArrR = True
+eqP _ _ = False
 
 matchP :: P a b -> a -> Maybe (b, b -> a)
 matchP p a =
@@ -94,6 +109,17 @@ data Seq f a b where
   Empty :: Seq f a a
   Single :: f a b -> Seq f a b
   Deep :: Digit f a b -> Seq (Node f) b c -> Digit f c d -> Seq f a d
+instance Show (Seq P a b) where
+  show ls = "[" <> go ls <> "]"
+    where
+      go :: Seq P a b -> String
+      go ls' =
+        case viewl ls' of
+          EmptyL -> ""
+          a :< as ->
+            case viewl as of
+              EmptyL -> show a
+              _ -> show a <> ", " <> go as
 
 empty :: Seq f a a
 empty = Empty
@@ -267,6 +293,19 @@ data TargetInfo b where
   TargetName :: TargetInfo Name
 
 type Path = Seq P
+
+eqPath :: Path a b -> Path c d -> Bool
+eqPath pa pb =
+  case viewl pa of
+    EmptyL ->
+      case viewl pb of
+        EmptyL -> True
+        _ -> False
+    a :< as ->
+      case viewl pb of
+        EmptyL -> False
+        b :< bs ->
+          eqP a b && eqPath as bs
 
 targetInfo :: Path a b -> Either (a :~: b) (TargetInfo b)
 targetInfo ps =
