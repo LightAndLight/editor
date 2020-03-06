@@ -5,6 +5,7 @@ module Typecheck where
 import qualified Bound
 import Bound.Var (Var(..), unvar)
 import Control.Monad (unless)
+import Data.Bifunctor (bimap, first)
 import Data.Void (Void)
 
 import Path (Path)
@@ -61,8 +62,8 @@ check name nameTy ctx path tm ty =
         name
         (unvar (\() -> n) nameTy)
         ((fmap.fmap) F . ctx)
-        path
-        tm
+        (_ path)
+        (_ $ tm)
         (Bound.fromScope rest)
     TArr a b ->
       case tm of
@@ -74,7 +75,7 @@ check name nameTy ctx path tm ty =
             (Path.snoc path Path.LamBody)
             (Bound.fromScope body)
             b
-        _ -> Left . NotTArr $ name <$> tm
+        _ -> Left . NotTArr $ bimap nameTy name tm
     _ -> do
       (ty', holes) <- infer name nameTy ctx path tm
       case ty' of
@@ -92,7 +93,7 @@ infer ::
   (tm -> Maybe (Type ty)) ->
   Path (Term y x) (Term ty tm) ->
   Term ty tm ->
-  Either TypeError (Type ty, Holes x y)
+  Either TypeError (Type ty, Holes y x)
 infer name nameTy ctx path tm =
   case tm of
     Hole -> pure (THole, Cons path (THole :: Type ty) Nil)
@@ -117,4 +118,4 @@ infer name nameTy ctx path tm =
                 xHoles
             )
         _ -> Left . ExpectedArr $ nameTy <$> fTy
-    _ -> Left . Can'tInfer $ name <$> tm
+    _ -> Left . Can'tInfer $ bimap nameTy name tm

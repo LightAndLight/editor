@@ -24,6 +24,7 @@ library
                      , Zipper
   build-depends:       base ^>=4.11.0.0
                      , bound
+                     , bifunctors
                      , deriving-compat
                      , text
   hs-source-dirs:      src

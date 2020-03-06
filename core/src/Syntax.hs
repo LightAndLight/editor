@@ -5,8 +5,13 @@
 module Syntax where
 
 import Bound (Scope)
+import Bound.Scope (bitraverseScope)
 import qualified Bound
 import Bound.TH (makeBound)
+import Data.Bifunctor (Bifunctor(..))
+import Data.Bifoldable (Bifoldable(..))
+import Data.Bitraversable
+  (Bitraversable(..), bifoldMapDefault, bimapDefault)
 import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Classes (eq1, showsPrec1)
 import Data.Text (Text)
@@ -39,6 +44,19 @@ deriveShow1 ''Term
 makeBound ''Term
 instance (Eq ty, Eq a) => Eq (Term ty a) where; (==) = eq1
 instance (Show ty, Show a) => Show (Term ty a) where; showsPrec = showsPrec1
+instance Bifunctor Term where; bimap = bimapDefault
+instance Bifoldable Term where; bifoldMap = bifoldMapDefault
+instance Bitraversable Term where
+  bitraverse f g tm =
+    case tm of
+      Hole -> pure Hole
+      Var a -> Var <$> g a
+      App a b ->
+        App <$> bitraverse f g a <*> bitraverse f g b
+      Lam n body ->
+        Lam n <$> bitraverseScope f g body
+      LamAnn n ty body ->
+        LamAnn n <$> traverse f ty <*> bitraverseScope f g body
 
 _Lam :: Text -> Maybe (Type ty) -> Term ty (Bound.Var () a) -> Term ty a
 _Lam x mty =
