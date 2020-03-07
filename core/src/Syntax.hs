@@ -15,6 +15,9 @@ import Data.Bitraversable
   (Bitraversable(..), bifoldMapDefault, bimapDefault)
 import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Classes (eq1, showsPrec1)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Maybe as Maybe
 import Data.Text (Text)
 import Data.Vector (Vector)
 import Data.Void (Void, absurd)
@@ -26,7 +29,7 @@ newtype TMeta = TMeta Int
 newtype KMeta = KMeta Int
   deriving (Eq, Ord, Show)
 
-newtype Name = Name { unName :: Text }
+newtype Name = N { unName :: Text }
   deriving (Eq, Show, IsString)
 
 data Kind
@@ -35,15 +38,18 @@ data Kind
   | KHole KMeta
   deriving (Eq, Show)
 
-substKMeta :: (KMeta, Kind) -> Kind -> Kind
-substKMeta (n, k) ki =
+substKMetas :: Map KMeta Kind -> Kind -> Kind
+substKMetas s ki =
   case ki of
     KUnsolved ctx rest ->
       KUnsolved
-        ((fmap.fmap) (substKMeta (n, k)) ctx)
-        (substKMeta (n, k) rest)
+        ((fmap.fmap) (substKMetas s) ctx)
+        (substKMetas s rest)
     KType -> KType
-    KHole n' -> if n == n' then k else ki
+    KHole n -> Maybe.fromMaybe ki $ Map.lookup n s
+
+substKMeta :: (KMeta, Kind) -> Kind -> Kind
+substKMeta (n, k) = substKMetas $ Map.singleton n k
 
 occursK :: KMeta -> Kind -> Bool
 occursK n ki =
@@ -55,6 +61,7 @@ occursK n ki =
 data Type a
   = THole TMeta
   | TVar a
+  | TName Name
   | TForall Name (Scope () Type a)
   | TArr (Type a) (Type a)
   | TUnsolved (Vector (Name, Kind)) (Scope Int Type Void)
@@ -68,22 +75,27 @@ occursT n ty =
   case ty of
     THole n' -> n == n'
     TVar{} -> False
+    TName{} -> False
     TForall _ body -> occursT n $ Bound.fromScope body
     TArr a b -> occursT n a || occursT n b
     TUnsolved _ body -> occursT n $ Bound.fromScope body
     TSubst a bs -> occursT n a || any (occursT n) bs
 
-substTMeta :: (TMeta, Type Void) -> Type ty -> Type ty
-substTMeta (n, t) ty =
+substTMetas :: Map TMeta (Type Void) -> Type ty -> Type ty
+substTMetas s ty =
   case ty of
-    THole n' -> if n == n' then absurd <$> t else ty
+    THole n -> maybe ty (fmap absurd) (Map.lookup n s)
     TVar{} -> ty
+    TName{} -> ty
     TForall name body ->
-      TForall name . Bound.toScope $ substTMeta (n, t) (Bound.fromScope body)
-    TArr a b -> TArr (substTMeta (n, t) a) (substTMeta (n, t) b)
+      TForall name . Bound.toScope $ substTMetas s (Bound.fromScope body)
+    TArr a b -> TArr (substTMetas s a) (substTMetas s b)
     TUnsolved ns body ->
-      TUnsolved ns . Bound.toScope $ substTMeta (n, t) (Bound.fromScope body)
-    TSubst a bs -> TSubst (substTMeta (n, t) a) (substTMeta (n, t) <$> bs)
+      TUnsolved ns . Bound.toScope $ substTMetas s (Bound.fromScope body)
+    TSubst a bs -> TSubst (substTMetas s a) (substTMetas s <$> bs)
+
+substTMeta :: (TMeta, Type Void) -> Type ty -> Type ty
+substTMeta (n, k) = substTMetas $ Map.singleton n k
 
 instance Applicative Type where; pure = return; (<*>) = ap
 instance Monad Type where
@@ -92,6 +104,7 @@ instance Monad Type where
     case ty of
       THole a -> THole a
       TVar a -> f a
+      TName a -> TName a
       TForall n body -> TForall n (body >>>= f)
       TArr a b -> TArr (a >>= f) (b >>= f)
       TUnsolved ns body -> TUnsolved ns body
@@ -104,6 +117,7 @@ occursK_Type n ty =
   case ty of
     THole{} -> False
     TVar{} -> False
+    TName{} -> False
     TForall _ body -> occursK_Type n $ Bound.fromScope body
     TArr a b -> occursK_Type n a || occursK_Type n b
     TUnsolved _ body -> occursK_Type n $ Bound.fromScope body
@@ -112,6 +126,7 @@ occursK_Type n ty =
 data Term ty a
   = Hole
   | Var a
+  | Name Name
   | App (Term ty a) (Term ty a)
   | Lam Name (Scope () (Term ty) a)
   | LamAnn Name (Type ty) (Scope () (Term ty) a)
@@ -128,6 +143,7 @@ instance Bitraversable Term where
     case tm of
       Hole -> pure Hole
       Var a -> Var <$> g a
+      Name a -> pure $ Name a
       App a b ->
         App <$> bitraverse f g a <*> bitraverse f g b
       Lam n body ->
@@ -138,5 +154,5 @@ instance Bitraversable Term where
 _Lam :: Text -> Maybe (Type ty) -> Term ty (Bound.Var () a) -> Term ty a
 _Lam x mty =
   case mty of
-    Nothing -> Lam (Name x) . Bound.toScope
-    Just ty -> LamAnn (Name x) ty . Bound.toScope
+    Nothing -> Lam (N x) . Bound.toScope
+    Just ty -> LamAnn (N x) ty . Bound.toScope
