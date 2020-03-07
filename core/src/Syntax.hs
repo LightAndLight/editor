@@ -1,13 +1,15 @@
 {-# language DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 {-# language FlexibleContexts #-}
 {-# language GeneralizedNewtypeDeriving #-}
+{-# language OverloadedStrings #-}
 {-# language TemplateHaskell #-}
 module Syntax where
 
 import Bound ((>>>=), Scope)
-import Bound.Scope (bitraverseScope)
+import Bound.Scope (bitraverseScope, instantiateEither)
 import qualified Bound
 import Bound.TH (makeBound)
+import Bound.Var (unvar)
 import Control.Monad (ap)
 import Data.Bifunctor (Bifunctor(..))
 import Data.Bifoldable (Bifoldable(..))
@@ -19,7 +21,9 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe as Maybe
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Vector (Vector)
+import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
 import GHC.Exts (IsString)
 
@@ -161,3 +165,66 @@ _Lam x mty =
   case mty of
     Nothing -> Lam (N x) . Bound.toScope
     Just ty -> LamAnn (N x) ty . Bound.toScope
+
+commaSep :: (a -> Text) -> Vector a -> Text
+commaSep f v =
+  case Vector.length v of
+    0 -> ""
+    1 -> f $ Vector.head v
+    _ ->
+      f (Vector.head v) <>
+      foldMap ((", " <>) . f) (Vector.tail v)
+
+printKMeta :: KMeta -> Text
+printKMeta (KM n) = Text.pack $ "?" <> show n
+
+printKind :: Kind -> Text
+printKind ki =
+  case ki of
+    KUnsolved ns rest ->
+      "Unsolved[" <>
+      commaSep (\(n, k) -> unName n <> " : " <> printKind k) ns <>
+      "] " <>
+      printKind rest
+    KType -> "Type"
+    KMeta n -> printKMeta n
+
+runSubst :: Type ty -> Type ty
+runSubst ty =
+  case ty of
+    TSubst a bs | Vector.length bs == 0 -> a
+    TSubst a bs ->
+      case a of
+        TUnsolved _ body ->
+          instantiateEither (either (bs Vector.!) absurd) body
+        _ -> ty
+    _ -> ty
+
+printTMeta :: TMeta -> Text
+printTMeta (TM n) = Text.pack $ "?" <> show n
+
+printType :: (ty -> Name) -> Type ty -> Text
+printType nameTy ty =
+  case runSubst ty of
+    THole -> "_"
+    TMeta n -> printTMeta n
+    TVar a -> unName $ nameTy a
+    TName n -> unName n
+    TForall n body ->
+      "forall " <> unName n <> ". " <>
+      printType (unvar (\() -> n) nameTy) (Bound.fromScope body)
+    TArr a b ->
+      printType nameTy a <>
+      " -> " <>
+      printType nameTy b
+    TUnsolved ctx body ->
+      "unsolved (" <>
+      commaSep (\(n, k) -> unName n <> " : " <> printKind k) ctx <>
+      "). " <>
+      printType (unvar (fst . (ctx Vector.!)) absurd) (Bound.fromScope body)
+    TSubst a bs ->
+      "subst(" <>
+      printType nameTy a <>
+      ", " <>
+      commaSep (printType nameTy) bs <>
+      ")"

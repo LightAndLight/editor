@@ -447,5 +447,13 @@ app = do
           mempty
           Path.empty <$>
         dTerm
-    dyn_ $ el "div" . text . Text.pack . show <$> dType
+    dyn_ $
+      (\case
+         Left err ->
+           el "div" . text . Text.pack $ show err
+         Right (ty, hs) -> do
+           el "div" . text $ Syntax.printType id ty
+           el "div" $ View.viewHoles id hs
+      ) <$>
+      dType
   pure ()

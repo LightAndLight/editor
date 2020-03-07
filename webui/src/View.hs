@@ -16,6 +16,7 @@ import Reflex
 import Reflex.Dom
 
 import Path (Path, P(..), ViewL(..), viewl, snoc)
+import Typecheck (Holes(..))
 import Style (classes)
 import qualified Style
 import qualified Syntax
@@ -523,3 +524,21 @@ viewTerm nameTy name path dmSelection tm = do
       , _nodeFocus childInfo
       ]
     }
+
+viewHoles ::
+  DomBuilder t m =>
+  (ty -> Syntax.Name) ->
+  Holes ty tm ->
+  m ()
+viewHoles nameTy holes =
+  case holes of
+    Nil -> el "div" $ text "no holes"
+    Cons p ns ty Nil ->
+      line p ns ty
+    Cons p ns ty rest -> do
+      line p ns ty
+      viewHoles nameTy rest
+  where
+    line p ns ty =
+      el "div" . text $
+      Text.pack (show p) <> ": " <> Syntax.printType ns ty

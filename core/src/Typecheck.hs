@@ -4,7 +4,6 @@
 module Typecheck where
 
 import qualified Bound
-import qualified Bound.Scope as Scope
 import Bound.Var (unvar)
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
@@ -249,19 +248,19 @@ inferKind nameTy ctxG ctx ty =
 
 data Holes ty tm where
   Cons ::
-    Show ty' =>
     Path (Term ty tm) (Term ty' tm') ->
+    (ty' -> Name) ->
     Type ty' ->
     Holes ty tm ->
     Holes ty tm
   Nil :: Holes ty tm
-deriving instance (Show ty, Show tm) => Show (Holes ty tm)
 
 substTMetas_Holes :: Map TMeta (Type Void) -> Holes ty tm -> Holes ty tm
 substTMetas_Holes s hs =
   case hs of
     Nil -> Nil
-    Cons p ty rest -> Cons p (substTMetas s ty) $ substTMetas_Holes s rest
+    Cons p ns ty rest ->
+      Cons p ns (substTMetas s ty) $ substTMetas_Holes s rest
 
 applySolutions_Holes ::
   MonadState (TCState ty) m =>
@@ -271,20 +270,19 @@ applySolutions_Holes hs = do
   pure $ substTMetas_Holes substs hs
 
 updateHole ::
-  Show ty' =>
   Path (Term ty tm) (Term ty' v) ->
   Type ty' ->
   Holes ty tm ->
   Holes ty tm
 updateHole _ _ Nil = Nil
-updateHole p t (Cons p' t' rest) =
+updateHole p t (Cons p' n t' rest) =
   case Path.eqPath p p' of
-    Nothing -> Cons p' t' (updateHole p t rest)
-    Just Refl -> Cons p' t (updateHole p t rest)
+    Nothing -> Cons p' n t' (updateHole p t rest)
+    Just Refl -> Cons p' n t (updateHole p t rest)
 
 appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
-appendHoles Nil a = a
-appendHoles (Cons a b c) d = Cons a b $ appendHoles c d
+appendHoles Nil hs = hs
+appendHoles (Cons p ns ty rest) hs = Cons p ns ty $ appendHoles rest hs
 
 solveTMeta ::
   MonadState (TCState ty) m =>
@@ -315,17 +313,6 @@ applySolutions :: MonadState (TCState ty) m => Type ty' -> m (Type ty')
 applySolutions ty = do
   subst <- gets _tcSubst
   pure $ substTMetas subst ty
-
-runSubst :: Type ty -> Type ty
-runSubst ty =
-  case ty of
-    TSubst a bs | Vector.length bs == 0 -> a
-    TSubst a bs ->
-      case a of
-        TUnsolved _ body ->
-          Scope.instantiateEither (either (bs Vector.!) absurd) body
-        _ -> ty
-    _ -> ty
 
 typeMismatch ::
   MonadError TypeError m =>
@@ -444,7 +431,7 @@ unifyType nameTy ctxG ctx expected actual =
     TSubst{} -> undefined
 
 check ::
-  (Eq ty', Show ty', MonadState (TCState ty) m, MonadError TypeError m) =>
+  (Eq ty', MonadState (TCState ty) m, MonadError TypeError m) =>
   (tm' -> Name) ->
   (ty' -> Name) ->
   (Name -> Maybe (Type ty')) ->
@@ -463,7 +450,7 @@ check name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm ty = do
 
 infer ::
   forall ty tm ty' tm' m.
-  (Eq ty', Show ty', MonadState (TCState ty) m, MonadError TypeError m) =>
+  (Eq ty', MonadState (TCState ty) m, MonadError TypeError m) =>
   (tm' -> Name) ->
   (ty' -> Name) ->
   (Name -> Maybe (Type ty')) ->
@@ -478,7 +465,7 @@ infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
   case tm of
     Hole -> do
       t <- freshTMeta boundTyVars KType
-      pure (t, Cons path (t :: Type ty') Nil)
+      pure (t, Cons path nameTy (t :: Type ty') Nil)
     Var a ->
       case ctx a of
         Nothing -> throwError $ NotInScope (name a)
@@ -548,7 +535,4 @@ infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
           inTy'
       outTy' <- applySolutions outTy
       holes <- applySolutions_Holes $ appendHoles fHoles xHoles
-      pure
-        ( outTy'
-        , holes
-        )
+      pure (outTy', holes)
