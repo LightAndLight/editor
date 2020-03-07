@@ -134,11 +134,13 @@ data MenuAction a where
   InsertLamAnn :: Path a (Term ty tm) -> TargetInfo (Term ty tm) -> MenuAction a
   InsertApp :: Path a (Term ty tm) -> TargetInfo (Term ty tm) -> MenuAction a
   InsertVar :: Path a Name -> TargetInfo Name -> Name -> MenuAction a
+  InsertTArr :: Path a (Type ty) -> TargetInfo (Type ty) -> MenuAction a
   AnnotateVar :: Path a Name -> TargetInfo Name -> MenuAction a
-  Other :: Text -> MenuAction a
 
-data TermAction a where
-  Delete :: Path a (Term ty tm) -> TermAction a
+  DeleteTerm :: Path a (Term ty tm) -> MenuAction a
+  DeleteType :: Path a (Type ty) -> MenuAction a
+
+  Other :: Text -> MenuAction a
 
 renderMenuAction ::
   DomBuilder t m =>
@@ -152,6 +154,9 @@ renderMenuAction selected action =
     InsertApp{} -> item "_ _"
     InsertVar _ _ n -> item $ unName n
     AnnotateVar{} -> item "□ : _"
+    InsertTArr{} -> item "_ -> _"
+    DeleteTerm{} -> item "_"
+    DeleteType{} -> item "_"
     Other str -> item str
   where
     item x = do
@@ -192,7 +197,10 @@ menuItems eNextItem dInputText path info = do
           , InsertLamAnn path info
           ]
         TargetType ->
-          pure $ constDyn [Other "thing4", Other "thing5", Other "thing6"]
+          pure $
+          constDyn
+          [ InsertTArr path info
+          ]
         TargetName ->
           pure $
             (\n ->
@@ -288,6 +296,75 @@ menu eOpen eClose eNextItem eEnter dSelection = do
   dOpen <- holdDyn False $ leftmost [True <$ eOpen, False <$ eClose]
   pure (dOpen, eAction)
 
+runAction :: MenuAction a -> (Some (Path a), a) -> (Some (Path a), a)
+runAction action (Some oldPath, old) =
+  case action of
+    InsertLam path info ->
+      case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) old of
+        Left err -> Debug.traceShow err (Some oldPath, old)
+        Right (newPath, _, new) -> (Some newPath, new)
+    InsertLamAnn path info ->
+      case Edit.edit path info (Edit.InsertTerm (Syntax.LamAnn "x" Syntax.THole $ lift Syntax.Hole) (Path.singleton Path.LamAnnType)) old of
+        Left err -> Debug.traceShow err (Some oldPath, old)
+        Right (newPath, _, new) -> (Some newPath, new)
+    InsertApp path info ->
+      case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
+        Left err -> Debug.traceShow err (Some oldPath, old)
+        Right (newPath, _, new) -> (Some newPath, new)
+    InsertVar path info n ->
+      case Edit.edit path info (Edit.ModifyName $ const n) old of
+        Left err -> Debug.traceShow err (Some oldPath, old)
+        Right (newPath, _, new) -> (Some newPath, new)
+    AnnotateVar path TargetName ->
+      case Path.viewr path of
+        EmptyR -> (Some oldPath, old)
+        ps :> p ->
+          case p of
+            Path.Var-> error "todo: annotate var"
+            Path.TVar-> error "todo: annotate tvar"
+            Path.TForallArg -> error "todo: annotate tvar"
+            Path.LamAnnArg->
+              case Zipper.downTo ps $ Zipper.toZipper old of
+                Nothing -> (Some oldPath, old)
+                Just z ->
+                  case Zipper._focus z of
+                    Syntax.LamAnn n _ body ->
+                      let
+                        new =
+                          Zipper.fromZipper $
+                          z { Zipper._focus = Syntax.LamAnn n THole body }
+                        newPath = Path.snoc ps Path.LamAnnType
+                      in
+                        (Some newPath, new)
+                    _ -> undefined
+            Path.LamArg ->
+              case Zipper.downTo ps $ Zipper.toZipper old of
+                Nothing -> (Some oldPath, old)
+                Just z ->
+                  case Zipper._focus z of
+                    Syntax.Lam n body ->
+                      let
+                        new =
+                          Zipper.fromZipper $
+                          z { Zipper._focus = Syntax.LamAnn n THole body }
+                        newPath = Path.snoc ps Path.LamAnnType
+                      in
+                        (Some newPath, new)
+                    _ -> undefined
+    InsertTArr path info ->
+      case Edit.edit path info (Edit.InsertType (Syntax.TArr Syntax.THole Syntax.THole) (Path.singleton Path.TArrL)) old of
+        Left err -> Debug.traceShow err (Some oldPath, old)
+        Right (newPath, _, new) -> (Some newPath, new)
+    DeleteTerm path ->
+      case Edit.edit path TargetTerm Edit.DeleteTerm old of
+        Left err -> Debug.traceShow err (Some oldPath, old)
+        Right (newPath, _, new) -> (Some newPath, new)
+    DeleteType path ->
+      case Edit.edit path TargetType Edit.DeleteType old of
+        Left err -> Debug.traceShow err (Some oldPath, old)
+        Right (newPath, _, new) -> (Some newPath, new)
+    Other{} -> (Some oldPath, old)
+
 app ::
   forall t m.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
@@ -315,68 +392,8 @@ app = do
         ($)
         (Some Path.empty, App (App (Var "f") (Var "x")) Hole)
         (mergeWith (.)
-         [ (\action (Some oldPath, old) ->
-              case action of
-                InsertLam path info ->
-                  case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) old of
-                    Left err -> Debug.traceShow err (Some oldPath, old)
-                    Right (newPath, _, new) -> (Some newPath, new)
-                InsertLamAnn path info ->
-                  case Edit.edit path info (Edit.InsertTerm (Syntax.LamAnn "x" Syntax.THole $ lift Syntax.Hole) (Path.singleton Path.LamAnnType)) old of
-                    Left err -> Debug.traceShow err (Some oldPath, old)
-                    Right (newPath, _, new) -> (Some newPath, new)
-                InsertApp path info ->
-                  case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
-                    Left err -> Debug.traceShow err (Some oldPath, old)
-                    Right (newPath, _, new) -> (Some newPath, new)
-                InsertVar path info n ->
-                  case Edit.edit path info (Edit.ModifyName $ const n) old of
-                    Left err -> Debug.traceShow err (Some oldPath, old)
-                    Right (newPath, _, new) -> (Some newPath, new)
-                AnnotateVar path TargetName ->
-                  case Path.viewr path of
-                    ps :> p ->
-                      case p of
-                        Path.Var-> error "todo: annotate var"
-                        Path.TVar-> error "todo: annotate tvar"
-                        Path.TForallArg -> error "todo: annotate tvar"
-                        Path.LamAnnArg->
-                          case Zipper.downTo ps $ Zipper.toZipper old of
-                            Nothing -> (Some oldPath, old)
-                            Just z ->
-                              case Zipper._focus z of
-                                Syntax.LamAnn n _ body ->
-                                  let
-                                    new =
-                                      Zipper.fromZipper $
-                                      z { Zipper._focus = Syntax.LamAnn n THole body }
-                                    newPath = Path.snoc ps Path.LamAnnType
-                                  in
-                                    (Some newPath, new)
-                                _ -> undefined
-                        Path.LamArg ->
-                          case Zipper.downTo ps $ Zipper.toZipper old of
-                            Nothing -> (Some oldPath, old)
-                            Just z ->
-                              case Zipper._focus z of
-                                Syntax.Lam n body ->
-                                  let
-                                    new =
-                                      Zipper.fromZipper $
-                                      z { Zipper._focus = Syntax.LamAnn n THole body }
-                                    newPath = Path.snoc ps Path.LamAnnType
-                                  in
-                                    (Some newPath, new)
-                                _ -> undefined
-                Other{} -> (Some oldPath, old)
-           ) <$>
-           eMenuAction
-         , (\(Delete path) (Some oldPath, old) ->
-              case Edit.edit path TargetTerm Edit.DeleteTerm old of
-                Left err -> Debug.traceShow err (Some oldPath, old)
-                Right (newPath, _, new) -> (Some newPath, new)
-           ) <$>
-           eDeleteTerm
+         [ runAction <$> eMenuAction
+         , runAction <$> eDeleteNode
          ]
         )
     let dPath = fst <$> dPathTerm
@@ -390,7 +407,7 @@ app = do
         (fmap View._nodeFocus . viewTerm id id empty dSelection)
         dTerm
     let
-      eDeleteTerm =
+      eDeleteNode =
         attachWithMaybe
           (\(open, m_sel) _ ->
              if open
@@ -399,7 +416,8 @@ app = do
                Some path <- m_sel
                case targetInfo path of
                  Left Refl -> undefined
-                 Right TargetTerm -> Just $ Delete path
+                 Right TargetTerm -> Just $ DeleteTerm path
+                 Right TargetType -> Just $ DeleteType path
                  Right{} -> Nothing
           )
           ((,) <$> current dMenuOpen <*> current dSelection)

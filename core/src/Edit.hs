@@ -75,6 +75,6 @@ edit path TargetType action a =
             Left Refl -> Right (Path.append path suffix, TargetType, a')
             Right info -> Right (Path.append path suffix, info, a')
     DeleteType ->
-      case Path.set path (Syntax.TMeta $ error "todo") a of
+      case Path.set path Syntax.THole a of
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (path, TargetType, a')
