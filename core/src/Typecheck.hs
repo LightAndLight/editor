@@ -3,52 +3,53 @@
 {-# language ScopedTypeVariables #-}
 module Typecheck where
 
+import Bound (Scope)
 import qualified Bound
+import qualified Bound.Scope as Scope
 import Bound.Var (unvar)
 import Control.Monad (unless)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, gets, modify)
 import Data.Bifunctor (bimap)
-import Data.Foldable (traverse_)
+import Data.Foldable (toList, traverse_)
+import Data.List as List
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Type.Equality ((:~:)(..))
 import qualified Data.Vector as Vector
 import Data.Vector (Vector)
+import Data.Void (Void, absurd)
 
 import Path (Path)
 import qualified Path
 import Syntax
 
-data TEntry ty
+data Entry
   = TEntry
   { _tentryMeta :: TMeta
   , _tentryKind :: Kind
-  } deriving (Eq, Show)
-
-occursK_TEntry :: KMeta -> TEntry ty -> Bool
-occursK_TEntry n (TEntry _ k) = occursK n k
-
-data KEntry
-  = KEntry
+  }
+  | KEntry
   { _kentryMeta :: KMeta
-  , _kentrySolution :: Maybe Kind
   } deriving (Eq, Show)
 
-occursK_KEntry :: KMeta -> KEntry -> Bool
-occursK_KEntry n (KEntry _ sol) = any (occursK n) sol
+occursK_Entry :: KMeta -> Entry -> Bool
+occursK_Entry n (TEntry _ k) = occursK n k
+occursK_Entry n KEntry{} = False
 
-substKMeta_KEntry :: (KMeta, Kind) -> KEntry -> KEntry
-substKMeta_KEntry s (KEntry n sol) = KEntry n $ substKMeta s <$> sol
+substKMeta_Entry :: (KMeta, Kind) -> Entry -> Entry
+substKMeta_Entry s (TEntry n k) = TEntry n $ substKMeta s k
+substKMeta_Entry s (KEntry n) = KEntry n
 
-data TCState a
+data TCState ty
   = TCState
   { _tcTypeSupply :: Int
   , _tcKindSupply :: Int
-  , _tcKindMetas :: Seq KEntry
-  , _tcTypeMetas :: Seq (TEntry a)
+  , _tcEntries :: Seq Entry
+  , _tcSubst :: Map TMeta (Type ty)
   }
 
 data TypeError
@@ -59,6 +60,9 @@ data TypeError
   | NotTArr (Term Name Name)
   | TypeMismatch (Type Name) (Type Name)
   | KindMismatch Kind Kind
+  | ExpectedKUnsolved Kind
+  | ArityMismatch Int Int
+  | Escape Name
   deriving Show
 
 freshTMeta :: MonadState (TCState ty) m => m TMeta
@@ -69,14 +73,18 @@ freshTMeta = do
 lookupTMeta ::
   (MonadState (TCState ty) m, MonadError TypeError m) =>
   TMeta ->
-  m (TEntry ty)
+  m Kind
 lookupTMeta t = do
   m_entry <-
     gets $
     foldr
-      (\x rest -> if _tentryMeta x == t then Just x else rest)
+      (\x rest ->
+         case x of
+           TEntry t' k -> if t == t' then Just k else rest
+           _ -> rest
+      )
       Nothing .
-    _tcTypeMetas
+    _tcEntries
   maybe (throwError $ TMetaNotInScope t) pure m_entry
 
 freshKMeta :: MonadState (TCState ty) m => m KMeta
@@ -90,7 +98,7 @@ solveKMeta ::
   Kind ->
   m ()
 solveKMeta n' k' = do
-  prefix <- gets _tcKindMetas
+  prefix <- gets _tcEntries
   let suffix = mempty
   let sig = mempty
   go prefix suffix sig n' k'
@@ -102,16 +110,16 @@ solveKMeta n' k' = do
           | _kentryMeta entry == n ->
             let
               appendSolving =
-                flip $ foldl (\acc x -> acc Seq.|> substKMeta_KEntry (n, k) x)
+                flip $ foldl (\acc x -> acc Seq.|> substKMeta_Entry (n, k) x)
             in
             modify $
             \tc ->
               tc
-              { _tcKindMetas =
+              { _tcEntries =
                 appendSolving suffix $ appendSolving sig prefix
               }
           | otherwise ->
-            if occursK_KEntry n entry
+            if occursK_Entry n entry
             then go prefix' (entry Seq.<| suffix) sig n k
             else go prefix' suffix (entry Seq.<| sig) n k
 
@@ -124,6 +132,7 @@ unifyKind expected actual =
   case expected of
     KUnsolved ctx k ->
       case actual of
+        KHole n -> solveKMeta n expected
         KUnsolved ctx' k' ->
           if Vector.length ctx == Vector.length ctx'
           then do
@@ -139,6 +148,7 @@ unifyKind expected actual =
         _ -> throwError $ KindMismatch expected actual
     KType ->
       case actual of
+        KHole n -> solveKMeta n expected
         KType -> pure ()
         _ -> throwError $ KindMismatch expected actual
     KHole n -> solveKMeta n actual
@@ -162,9 +172,7 @@ inferKind ::
   m Kind
 inferKind nameTy ctx ty =
   case ty of
-    THole n -> do
-      TEntry _ k <- lookupTMeta n
-      pure k
+    THole n -> lookupTMeta n
     TVar a ->
       maybe (throwError . NotInScope $ nameTy a) pure (ctx a)
     TForall n body -> do
@@ -179,10 +187,23 @@ inferKind nameTy ctx ty =
       pure KType
     TUnsolved ns body ->
       inferKind
-        (unvar (ns Vector.!) _)
-        (unvar _ _)
+        (unvar (fst . (ns Vector.!)) absurd)
+        (unvar (Just . snd . (ns Vector.!)) absurd)
         (Bound.fromScope body)
-    TSubst a bs -> _
+    TSubst a bs -> do
+      aKind <- inferKind nameTy ctx a
+      case aKind of
+        KUnsolved ns bodyKind ->
+          let
+            lbs = length bs
+            lns = length ns
+          in
+            if lns == lbs
+            then do
+              traverse_ (\(x, y) -> checkKind nameTy ctx x (snd y)) (Vector.zip bs ns)
+              pure bodyKind
+            else throwError $ ArityMismatch lns lbs
+        _ -> throwError $ ExpectedKUnsolved aKind
 
 data Holes ty tm where
   Cons ::
@@ -209,6 +230,116 @@ updateHole p t (Cons p' t' rest) =
 appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
 appendHoles Nil a = a
 appendHoles (Cons a b c) d = Cons a b $ appendHoles c d
+
+solveTMeta ::
+  MonadState (TCState ty) m =>
+  TMeta ->
+  Type Void ->
+  m ()
+solveTMeta n' t' = do
+  prefix <- gets _tcEntries
+  let suffix = mempty
+  let sig = mempty
+  go prefix suffix sig n' t'
+  where
+    go prefix suffix sig n t =
+      case Seq.viewr prefix of
+        Seq.EmptyR -> undefined
+        prefix' Seq.:> entry
+          | _tentryMeta entry == n ->
+            modify $
+            \tc ->
+              tc
+              { _tcEntries = prefix <> sig <> suffix
+              , _tcSubst = Map.insert n (absurd <$> t) $ substTMeta (n, t) <$> _tcSubst tc
+              }
+          | otherwise ->
+            go prefix' suffix (entry Seq.<| sig) n t
+
+runSubst :: Type ty -> Type ty
+runSubst ty =
+  case ty of
+    TSubst a bs ->
+      case a of
+        TUnsolved _ body -> Scope.instantiateEither (either (bs Vector.!) absurd) body
+        _ -> ty
+    _ -> ty
+
+unifyType ::
+  ( MonadState (TCState ty) m, MonadError TypeError m
+  , Eq ty'
+  ) =>
+  (ty' -> Name) ->
+  (ty' -> Maybe Kind) ->
+  Type ty' ->
+  Type ty' ->
+  m ()
+unifyType nameTy ctx expected actual =
+  case runSubst expected of
+    THole n ->
+      case runSubst actual of
+        THole n' -> solveTMeta n (THole n')
+        _ -> throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
+    TVar a ->
+      case runSubst actual of
+        TVar a' | a == a' -> pure ()
+        THole n -> error "todo"
+        _ -> throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
+    TForall n body ->
+      case runSubst actual of
+        TForall n' body' -> do
+          k <- KHole <$> freshKMeta
+          unifyType
+            (unvar (\() -> n') nameTy)
+            (unvar (\() -> Just k) ctx)
+            (Bound.fromScope body)
+            (Bound.fromScope body')
+        THole n -> error "todo"
+        _ -> throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
+    TArr a b ->
+      case runSubst actual of
+        TArr a' b' -> do
+          unifyType nameTy ctx a a'
+          unifyType nameTy ctx b b'
+        THole n -> error "todo"
+        _ -> throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
+    TUnsolved ns body ->
+      case runSubst actual of
+        TUnsolved ns' body' | length ns == length ns' -> do
+          traverse_
+            (\(a, b) ->
+               if fst a == fst b
+               then unifyKind (snd a) (snd b)
+               else throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
+            )
+            (Vector.zip ns ns')
+          unifyType
+            (unvar (fst . (ns' Vector.!)) absurd)
+            (unvar (Just . snd . (ns' Vector.!)) absurd)
+            (Bound.fromScope body)
+            (Bound.fromScope body')
+        THole n -> error "todo"
+        _ -> throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
+    TSubst (THole n) bs -> do
+      k <- lookupTMeta n
+      case k of
+        KUnsolved ns bodyK -> do
+          let
+            actual' =
+              TUnsolved ns . Bound.toScope <$>
+              traverse
+                (\v ->
+                   case Vector.findIndex ((nameTy v ==) . fst) ns of
+                     Nothing -> Left v
+                     Just ix -> Right $ Bound.B ix
+                )
+                actual
+          case actual' of
+            Left v -> throwError $ Escape (nameTy v)
+            Right sol -> solveTMeta n sol
+        KHole kn -> error "todo"
+        _ -> undefined
+    TSubst{} -> undefined
 
 {-
 check ::

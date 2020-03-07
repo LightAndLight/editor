@@ -4,7 +4,7 @@
 {-# language TemplateHaskell #-}
 module Syntax where
 
-import Bound (Scope)
+import Bound ((>>>=), Scope)
 import Bound.Scope (bitraverseScope)
 import qualified Bound
 import Bound.TH (makeBound)
@@ -17,7 +17,7 @@ import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Classes (eq1, showsPrec1)
 import Data.Text (Text)
 import Data.Vector (Vector)
-import Data.Void (Void)
+import Data.Void (Void, absurd)
 import GHC.Exts (IsString)
 
 newtype TMeta = TMeta Int
@@ -57,14 +57,45 @@ data Type a
   | TVar a
   | TForall Name (Scope () Type a)
   | TArr (Type a) (Type a)
-  | TUnsolved (Vector Name) (Scope Int Type Void)
+  | TUnsolved (Vector (Name, Kind)) (Scope Int Type Void)
   | TSubst (Type a) (Vector (Type a))
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Type
 deriveShow1 ''Type
 
+occursT :: TMeta -> Type ty -> Bool
+occursT n ty =
+  case ty of
+    THole n' -> n == n'
+    TVar{} -> False
+    TForall _ body -> occursT n $ Bound.fromScope body
+    TArr a b -> occursT n a || occursT n b
+    TUnsolved _ body -> occursT n $ Bound.fromScope body
+    TSubst a bs -> occursT n a || any (occursT n) bs
+
+substTMeta :: (TMeta, Type Void) -> Type ty -> Type ty
+substTMeta (n, t) ty =
+  case ty of
+    THole n' -> if n == n' then absurd <$> t else ty
+    TVar{} -> ty
+    TForall name body ->
+      TForall name . Bound.toScope $ substTMeta (n, t) (Bound.fromScope body)
+    TArr a b -> TArr (substTMeta (n, t) a) (substTMeta (n, t) b)
+    TUnsolved ns body ->
+      TUnsolved ns . Bound.toScope $ substTMeta (n, t) (Bound.fromScope body)
+    TSubst a bs -> TSubst (substTMeta (n, t) a) (substTMeta (n, t) <$> bs)
+
 instance Applicative Type where; pure = return; (<*>) = ap
 instance Monad Type where
+  return = TVar
+  ty >>= f =
+    case ty of
+      THole a -> THole a
+      TVar a -> f a
+      TForall n body -> TForall n (body >>>= f)
+      TArr a b -> TArr (a >>= f) (b >>= f)
+      TUnsolved ns body -> TUnsolved ns body
+      TSubst a bs -> TSubst (a >>= f) (fmap (>>= f) bs)
 instance Eq a => Eq (Type a) where; (==) = eq1
 instance Show a => Show (Type a) where; showsPrec = showsPrec1
 
