@@ -8,6 +8,7 @@ import Bound (Scope)
 import Bound.Scope (bitraverseScope)
 import qualified Bound
 import Bound.TH (makeBound)
+import Control.Monad (ap)
 import Data.Bifunctor (Bifunctor(..))
 import Data.Bifoldable (Bifoldable(..))
 import Data.Bitraversable
@@ -15,22 +16,67 @@ import Data.Bitraversable
 import Data.Deriving (deriveEq1, deriveShow1)
 import Data.Functor.Classes (eq1, showsPrec1)
 import Data.Text (Text)
+import Data.Vector (Vector)
+import Data.Void (Void)
 import GHC.Exts (IsString)
+
+newtype TMeta = TMeta Int
+  deriving (Eq, Ord, Show)
+
+newtype KMeta = KMeta Int
+  deriving (Eq, Ord, Show)
 
 newtype Name = Name { unName :: Text }
   deriving (Eq, Show, IsString)
 
+data Kind
+  = KUnsolved (Vector (Name, Kind)) Kind
+  | KType
+  | KHole KMeta
+  deriving (Eq, Show)
+
+substKMeta :: (KMeta, Kind) -> Kind -> Kind
+substKMeta (n, k) ki =
+  case ki of
+    KUnsolved ctx rest ->
+      KUnsolved
+        ((fmap.fmap) (substKMeta (n, k)) ctx)
+        (substKMeta (n, k) rest)
+    KType -> KType
+    KHole n' -> if n == n' then k else ki
+
+occursK :: KMeta -> Kind -> Bool
+occursK n ki =
+  case ki of
+    KType -> False
+    KHole n' -> n == n'
+    KUnsolved ctx a -> any (occursK n . snd) ctx || occursK n a
+
 data Type a
-  = THole Int
+  = THole TMeta
   | TVar a
   | TForall Name (Scope () Type a)
   | TArr (Type a) (Type a)
+  | TUnsolved (Vector Name) (Scope Int Type Void)
+  | TSubst (Type a) (Vector (Type a))
   deriving (Functor, Foldable, Traversable)
 deriveEq1 ''Type
 deriveShow1 ''Type
-makeBound ''Type
+
+instance Applicative Type where; pure = return; (<*>) = ap
+instance Monad Type where
 instance Eq a => Eq (Type a) where; (==) = eq1
 instance Show a => Show (Type a) where; showsPrec = showsPrec1
+
+occursK_Type :: KMeta -> Type ty -> Bool
+occursK_Type n ty =
+  case ty of
+    THole{} -> False
+    TVar{} -> False
+    TForall _ body -> occursK_Type n $ Bound.fromScope body
+    TArr a b -> occursK_Type n a || occursK_Type n b
+    TUnsolved _ body -> occursK_Type n $ Bound.fromScope body
+    TSubst a bs -> occursK_Type n a || any (occursK_Type n) bs
 
 data Term ty a
   = Hole
