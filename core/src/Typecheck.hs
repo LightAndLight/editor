@@ -48,6 +48,15 @@ data TCState ty
   , _tcSubst :: Map TMeta (Type Void)
   }
 
+emptyTCState :: TCState ty
+emptyTCState =
+  TCState
+  { _tcTypeSupply = 0
+  , _tcKindSupply = 0
+  , _tcEntries = mempty
+  , _tcSubst = mempty
+  }
+
 data TypeError
   = NotInScope Name
   | TMetaNotInScope TMeta
@@ -69,28 +78,28 @@ freshTMeta ::
 freshTMeta boundTyVars k = do
   n <- gets _tcTypeSupply
   let
-    m = TMeta n
+    m = TM n
     bs =
       Vector.generate
         (Seq.length boundTyVars)
         (fromJust . (boundTyVars Seq.!?))
+    entry = TEntry m (KUnsolved ((\(a, _, b) -> (a, b)) <$> bs) k)
+
   modify $
     \tc ->
       tc
       { _tcTypeSupply = n + 1
-      , _tcEntries =
-        _tcEntries tc Seq.|>
-        TEntry m (KUnsolved ((\(a, _, b) -> (a, b)) <$> bs) k)
+      , _tcEntries = _tcEntries tc Seq.|> entry
       }
   pure $
     TSubst
-      (THole m)
+      (TMeta m)
       ((\(_, a, _) -> a) <$> bs)
 
 freshKMeta :: MonadState (TCState ty) m => m KMeta
 freshKMeta = do
   n <- gets _tcKindSupply
-  let m = KMeta n
+  let m = KM n
   modify $
     \tc ->
       tc
@@ -156,7 +165,7 @@ unifyKind expected actual =
   case expected of
     KUnsolved ctx k ->
       case actual of
-        KHole n -> solveKMeta n expected
+        KMeta n -> solveKMeta n expected
         KUnsolved ctx' k' ->
           if Vector.length ctx == Vector.length ctx'
           then do
@@ -172,10 +181,10 @@ unifyKind expected actual =
         _ -> throwError $ KindMismatch expected actual
     KType ->
       case actual of
-        KHole n -> solveKMeta n expected
+        KMeta n -> solveKMeta n expected
         KType -> pure ()
         _ -> throwError $ KindMismatch expected actual
-    KHole n -> solveKMeta n actual
+    KMeta n -> solveKMeta n actual
 
 checkKind ::
   (MonadState (TCState ty) m, MonadError TypeError m) =>
@@ -198,13 +207,14 @@ inferKind ::
   m Kind
 inferKind nameTy ctxG ctx ty =
   case ty of
-    THole n -> lookupTMeta n
+    THole -> KMeta <$> freshKMeta
+    TMeta n -> lookupTMeta n
     TVar a ->
       maybe (throwError . NotInScope $ nameTy a) pure (ctx a)
     TName a ->
       maybe (throwError $ NotInScope a) pure (ctxG a)
     TForall n body -> do
-      k <- KHole <$> freshKMeta
+      k <- KMeta <$> freshKMeta
       inferKind
         (unvar (\() -> n) nameTy)
         ctxG
@@ -309,6 +319,7 @@ applySolutions ty = do
 runSubst :: Type ty -> Type ty
 runSubst ty =
   case ty of
+    TSubst a bs | Vector.length bs == 0 -> a
     TSubst a bs ->
       case a of
         TUnsolved _ body ->
@@ -337,38 +348,47 @@ unifyType ::
   m ()
 unifyType nameTy ctxG ctx expected actual =
   case runSubst expected of
-    THole n ->
+    THole -> pure ()
+    TMeta n ->
       case runSubst actual of
-        THole n' -> solveTMeta n (THole n')
+        TMeta n' -> solveTMeta n (TMeta n')
+        THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TVar a ->
       case runSubst actual of
         TVar a' | a == a' -> pure ()
-        THole n -> error "todo" n
+        TMeta n -> error "todo" n
+        THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TName a ->
       case runSubst actual of
         TName a' | a == a' -> pure ()
-        THole n -> error "todo" n
+        TMeta n -> error "todo" n
+        THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TForall _ body ->
       case runSubst actual of
         TForall n' body' -> do
-          k <- KHole <$> freshKMeta
+          k <- KMeta <$> freshKMeta
           unifyType
             (unvar (\() -> n') nameTy)
             ctxG
             (unvar (\() -> Just k) ctx)
             (Bound.fromScope body)
             (Bound.fromScope body')
-        THole n -> error "todo" n
+        TMeta n -> error "todo" n
+        THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TArr a b ->
       case runSubst actual of
         TArr a' b' -> do
           unifyType nameTy ctxG ctx a a'
           unifyType nameTy ctxG ctx b b'
-        THole n -> error "todo" n
+        TMeta n -> do
+          case traverse (const Nothing) expected of
+            Nothing -> error "todo"
+            Just sol -> solveTMeta n sol
+        THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TUnsolved ns body ->
       case runSubst actual of
@@ -386,9 +406,10 @@ unifyType nameTy ctxG ctx expected actual =
             (unvar (Just . snd . (ns' Vector.!)) absurd)
             (Bound.fromScope body)
             (Bound.fromScope body')
-        THole n -> error "todo" n
+        TMeta n -> error "todo" n
+        THole -> pure ()
         _ -> typeMismatch nameTy expected actual
-    TSubst (THole n) bs -> do
+    TSubst (TMeta n) bs -> do
       k <- lookupTMeta n
       case k of
         KUnsolved ns bodyK -> do
@@ -418,7 +439,7 @@ unifyType nameTy ctxG ctx expected actual =
                 sol
                 bodyK
               solveTMeta n $ TUnsolved ns (Bound.toScope sol)
-        KHole kn -> error "todo" kn
+        KMeta kn -> error "todo" kn
         _ -> undefined
     TSubst{} -> undefined
 

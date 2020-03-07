@@ -29,6 +29,7 @@ executable webui
                      , ghcjs-dom
                      , jsaddle
                      , jsaddle-dom
+                     , mtl
                      , reflex >=0.5
                      , reflex-dom >=0.5
                      , text

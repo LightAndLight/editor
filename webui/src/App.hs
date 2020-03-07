@@ -12,6 +12,7 @@ import qualified Debug.Trace as Debug
 
 import Control.Monad (when)
 import Control.Monad.Fix (MonadFix)
+import Control.Monad.State (evalStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Functor (void)
 import "core" Data.Some (Some(..))
@@ -195,7 +196,7 @@ menuItems eNextItem dInputText path info = do
         TargetName ->
           pure $
             (\n ->
-               [ InsertVar path info $ Name n
+               [ InsertVar path info $ N n
                , AnnotateVar path info
                ]
             ) <$>
@@ -408,6 +409,25 @@ app = do
       eCloseMenu = eEscape <> void eSelection <> void eMenuAction
     (dMenuOpen, eMenuAction) <-
       menu eOpenMenu eCloseMenu eNextItem eEnter dSelection
-    let dType = Typecheck.infer id id (const Nothing) Path.empty <$> dTerm
+    let
+      dType ::
+        Dynamic
+          t
+          (Either
+             Typecheck.TypeError
+             (Syntax.Type Name, Typecheck.Holes Name Name)
+          )
+      dType =
+        flip evalStateT Typecheck.emptyTCState .
+        Typecheck.infer
+          id
+          id
+          (const Nothing)
+          (const Nothing)
+          (const Nothing)
+          (const Nothing)
+          mempty
+          Path.empty <$>
+        dTerm
     dyn_ $ el "div" . text . Text.pack . show <$> dType
   pure ()

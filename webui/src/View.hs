@@ -11,6 +11,7 @@ import qualified Bound
 import Bound.Var (unvar)
 import Control.Monad.Fix (MonadFix)
 import "core" Data.Some (Some(..))
+import qualified Data.Text as Text
 import Reflex
 import Reflex.Dom
 
@@ -141,8 +142,24 @@ viewType nameTy path dmSelection ty = do
          dMouseHeld
         ) $
       case ty of
+        Syntax.TUnsolved{} -> error "todo"
+        Syntax.TSubst{} -> error "todo"
+        Syntax.TName n -> do
+          text $ Syntax.unName n
+          pure $
+            NodeInfo
+            { _nodeHovered = constDyn False
+            , _nodeFocus = never
+            }
         Syntax.THole -> do
           text "_"
+          pure $
+            NodeInfo
+            { _nodeHovered = constDyn False
+            , _nodeFocus = never
+            }
+        Syntax.TMeta n -> do
+          text . Text.pack $ "?" <> show n
           pure $
             NodeInfo
             { _nodeHovered = constDyn False
@@ -315,6 +332,13 @@ viewTerm nameTy name path dmSelection tm = do
          dMouseHeld
         ) $
       case tm of
+        Syntax.Name n -> do
+          text $ Syntax.unName n
+          pure $
+            NodeInfo
+            { _nodeHovered = constDyn False
+            , _nodeFocus = never
+            }
         Syntax.Hole -> do
           text "_"
           pure $

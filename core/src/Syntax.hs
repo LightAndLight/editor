@@ -23,10 +23,10 @@ import Data.Vector (Vector)
 import Data.Void (Void, absurd)
 import GHC.Exts (IsString)
 
-newtype TMeta = TMeta Int
+newtype TMeta = TM Int
   deriving (Eq, Ord, Show)
 
-newtype KMeta = KMeta Int
+newtype KMeta = KM Int
   deriving (Eq, Ord, Show)
 
 newtype Name = N { unName :: Text }
@@ -35,7 +35,7 @@ newtype Name = N { unName :: Text }
 data Kind
   = KUnsolved (Vector (Name, Kind)) Kind
   | KType
-  | KHole KMeta
+  | KMeta KMeta
   deriving (Eq, Show)
 
 substKMetas :: Map KMeta Kind -> Kind -> Kind
@@ -46,7 +46,7 @@ substKMetas s ki =
         ((fmap.fmap) (substKMetas s) ctx)
         (substKMetas s rest)
     KType -> KType
-    KHole n -> Maybe.fromMaybe ki $ Map.lookup n s
+    KMeta n -> Maybe.fromMaybe ki $ Map.lookup n s
 
 substKMeta :: (KMeta, Kind) -> Kind -> Kind
 substKMeta (n, k) = substKMetas $ Map.singleton n k
@@ -55,11 +55,12 @@ occursK :: KMeta -> Kind -> Bool
 occursK n ki =
   case ki of
     KType -> False
-    KHole n' -> n == n'
+    KMeta n' -> n == n'
     KUnsolved ctx a -> any (occursK n . snd) ctx || occursK n a
 
 data Type a
-  = THole TMeta
+  = THole
+  | TMeta TMeta
   | TVar a
   | TName Name
   | TForall Name (Scope () Type a)
@@ -73,7 +74,8 @@ deriveShow1 ''Type
 occursT :: TMeta -> Type ty -> Bool
 occursT n ty =
   case ty of
-    THole n' -> n == n'
+    THole -> False
+    TMeta n' -> n == n'
     TVar{} -> False
     TName{} -> False
     TForall _ body -> occursT n $ Bound.fromScope body
@@ -84,7 +86,8 @@ occursT n ty =
 substTMetas :: Map TMeta (Type Void) -> Type ty -> Type ty
 substTMetas s ty =
   case ty of
-    THole n -> maybe ty (fmap absurd) (Map.lookup n s)
+    THole -> THole
+    TMeta n -> maybe ty (fmap absurd) (Map.lookup n s)
     TVar{} -> ty
     TName{} -> ty
     TForall name body ->
@@ -102,7 +105,8 @@ instance Monad Type where
   return = TVar
   ty >>= f =
     case ty of
-      THole a -> THole a
+      THole -> THole
+      TMeta a -> TMeta a
       TVar a -> f a
       TName a -> TName a
       TForall n body -> TForall n (body >>>= f)
@@ -115,7 +119,8 @@ instance Show a => Show (Type a) where; showsPrec = showsPrec1
 occursK_Type :: KMeta -> Type ty -> Bool
 occursK_Type n ty =
   case ty of
-    THole{} -> False
+    THole -> False
+    TMeta{} -> False
     TVar{} -> False
     TName{} -> False
     TForall _ body -> occursK_Type n $ Bound.fromScope body
