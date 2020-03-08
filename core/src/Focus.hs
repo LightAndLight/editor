@@ -1,5 +1,6 @@
 {-# language GADTs #-}
 {-# language ScopedTypeVariables, TypeApplications #-}
+{-# language StandaloneDeriving #-}
 module Focus where
 
 import qualified Bound
@@ -13,6 +14,7 @@ data Branch a where
 
 data Selection a where
   Selection :: HasTargetInfo b => Path a b -> Selection a
+deriving instance Show (Selection a)
 
 nextHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
 nextHole = goDown Path.empty []

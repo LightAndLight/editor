@@ -275,16 +275,13 @@ menu ::
   Event t () ->
   Event t () ->
   Event t () ->
-  Dynamic t (Maybe (Focus.Selection (Syntax.Term ty tm))) ->
+  Dynamic t (Focus.Selection (Syntax.Term ty tm)) ->
   m (Dynamic t Bool, Event t (MenuAction (Syntax.Term ty tm)))
 menu eOpen eClose eNextItem eEnter dSelection = do
   eAction <-
     fmap switchDyn . widgetHold (pure never) $
     leftmost
-    [ maybe
-        (pure never)
-        (\(Focus.Selection path) -> menuForTarget eNextItem eEnter path
-        ) <$>
+    [ (\(Focus.Selection path) -> menuForTarget eNextItem eEnter path) <$>
       current dSelection <@ eOpen
     , pure never <$ eClose
     ]
@@ -398,28 +395,27 @@ app = do
          [ runAction <$> eMenuAction
          , runAction <$> eDeleteNode
          , eNextHole
+         , (\p (_, a) -> (p, a)) <$> eSelection
          ]
         )
-    let dPath = fst <$> dPathTerm
+    let dSelection = fst <$> dPathTerm
     let dTerm = snd <$> dPathTerm
-    dSelection <-
-      holdDyn Nothing $
-      leftmost [Just <$> updated dPath, Just <$> eSelection]
     eSelection :: Event t (Focus.Selection (Syntax.Term Name Name)) <-
       fmap switchDyn $
       bindDynamicM
-        (fmap View._nodeFocus . viewTerm id id empty dSelection)
+        (fmap View._nodeFocus . viewTerm id id empty (Just <$> dSelection))
         dTerm
     let
       eDeleteNode =
         attachWithMaybe
-          (\(open, m_sel) _ -> do
+          (\(open, sel) _ -> do
              guard $ not open
-             Focus.Selection (path :: Path (Syntax.Term Name Name) x) <- m_sel
-             case targetInfo @x of
-               TargetTerm -> Just $ DeleteTerm path
-               TargetType -> Just $ DeleteType path
-               TargetName -> Nothing
+             case sel of
+               Focus.Selection (path :: Path (Syntax.Term Name Name) x) ->
+                 case targetInfo @x of
+                   TargetTerm -> Just $ DeleteTerm path
+                   TargetType -> Just $ DeleteType path
+                   TargetName -> Nothing
           )
           ((,) <$> current dMenuOpen <*> current dSelection)
           eDelete
@@ -448,8 +444,6 @@ app = do
           mempty
           Path.empty <$>
         dTerm
-    dyn_ $ el "div" . text . Text.pack . show <$> dTerm
-    dyn_ $ (el "div" . text . maybe "Nothing" (\(Focus.Selection p) -> Text.pack $ show p)) <$> dSelection
     dyn_ $
       (\case
          Left err ->
