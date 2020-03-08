@@ -310,6 +310,13 @@ data TargetInfo b where
   TargetType :: TargetInfo (Type v)
   TargetName :: TargetInfo Name
 
+class HasTargetInfo a where
+  targetInfo :: TargetInfo a
+
+instance HasTargetInfo (Term ty tm) where; targetInfo = TargetTerm
+instance HasTargetInfo (Type ty) where; targetInfo = TargetType
+instance HasTargetInfo Name where; targetInfo = TargetName
+
 type Path = Seq P
 
 eqPath :: Path a b -> Path a d -> Maybe (b :~: d)
@@ -327,6 +334,7 @@ eqPath pa pb =
           Refl <- eqPath as bs
           pure Refl
 
+{-
 targetInfo :: Path a b -> Either (a :~: b) (TargetInfo b)
 targetInfo ps =
   case viewr ps of
@@ -347,6 +355,7 @@ targetInfo ps =
         TForallBody -> TargetType
         TArrL -> TargetType
         TArrR -> TargetType
+-}
 
 modifyA ::
   Path a b ->

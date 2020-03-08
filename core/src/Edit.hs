@@ -1,14 +1,12 @@
 {-# language EmptyCase #-}
 {-# language GADTs #-}
 {-# language LambdaCase #-}
-{-# language ScopedTypeVariables #-}
+{-# language ScopedTypeVariables, TypeApplications #-}
 module Edit where
-
-import Data.Type.Equality ((:~:)(..))
 
 import Syntax (Name, Term, Type)
 import qualified Syntax
-import Path (Path, TargetInfo(..), targetInfo)
+import Path (Path, TargetInfo(..), HasTargetInfo, targetInfo)
 import qualified Path
 
 data Action a b where
@@ -30,6 +28,7 @@ instance Show EditError where
 
 edit ::
   forall src tgt tgt'.
+  HasTargetInfo tgt' =>
   Path src tgt ->
   TargetInfo tgt ->
   Action tgt tgt' ->
@@ -42,17 +41,11 @@ edit path TargetTerm action a =
     InsertTerm tm suffix ->
       case Path.set path tm a of
         Nothing -> Left $ InvalidPath path a
-        Just a' ->
-          case targetInfo suffix of
-            Left Refl -> Right (Path.append path suffix, TargetTerm, a')
-            Right info -> Right (Path.append path suffix, info, a')
+        Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
     ModifyTerm f suffix ->
       case Path.modify path f a of
         Nothing -> Left $ InvalidPath path a
-        Just a' ->
-          case targetInfo suffix of
-            Left Refl -> Right (Path.append path suffix, TargetTerm, a')
-            Right info -> Right (Path.append path suffix, info, a')
+        Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
     DeleteTerm ->
       case Path.set path Syntax.Hole a of
         Nothing -> Left $ InvalidPath path a
@@ -70,10 +63,7 @@ edit path TargetType action a =
     InsertType ty suffix ->
       case Path.set path ty a of
         Nothing -> Left $ InvalidPath path a
-        Just a' ->
-          case targetInfo suffix of
-            Left Refl -> Right (Path.append path suffix, TargetType, a')
-            Right info -> Right (Path.append path suffix, info, a')
+        Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
     DeleteType ->
       case Path.set path Syntax.THole a of
         Nothing -> Left $ InvalidPath path a

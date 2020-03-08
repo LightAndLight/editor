@@ -10,18 +10,16 @@ module View where
 import qualified Bound
 import Bound.Var (unvar)
 import Control.Monad.Fix (MonadFix)
-import "core" Data.Some (Some(..))
 import qualified Data.Text as Text
 import Reflex
 import Reflex.Dom
 
-import Path (Path, P(..), ViewL(..), viewl, snoc)
+import Focus (Selection(..))
+import Path (Path, P(..), ViewL(..), HasTargetInfo, viewl, snoc)
 import Typecheck (Holes(..))
 import Style (classes)
 import qualified Style
 import qualified Syntax
-
-type Selection a = Some (Path a)
 
 data NodeInfo t a
   = NodeInfo
@@ -31,6 +29,7 @@ data NodeInfo t a
 
 viewName ::
   (MonadHold t m, DomBuilder t m, PostBuild t m, MonadFix m) =>
+  HasTargetInfo b =>
   (b -> Syntax.Name) ->
   Path (Syntax.Term ty tm) b ->
   Dynamic t (Maybe (Selection b)) ->
@@ -56,7 +55,7 @@ viewName name path dmSelection v = do
         (\mSelection ->
            case mSelection of
              Nothing -> False
-             Just (Some path') ->
+             Just (Selection path') ->
                case viewl path' of
                  EmptyL -> True
                  _ :< _ -> False
@@ -81,7 +80,7 @@ viewName name path dmSelection v = do
   pure $
     NodeInfo
     { _nodeHovered = dHovered
-    , _nodeFocus = Some path <$ gate (current dHovered) eClicked
+    , _nodeFocus = Selection path <$ gate (current dHovered) eClicked
     }
 
 viewType ::
@@ -117,7 +116,7 @@ viewType nameTy path dmSelection ty = do
         (\mSelection ->
            case mSelection of
              Nothing -> False
-             Just (Some path') ->
+             Just (Selection path') ->
                case viewl path' of
                  EmptyL -> True
                  _ :< _ -> False
@@ -187,8 +186,8 @@ viewType nameTy path dmSelection ty = do
               (snoc path TArrL)
               (
                (>>=
-               \(Some f) -> case viewl f of
-                 TArrL :< rest -> Just (Some rest)
+               \(Selection f) -> case viewl f of
+                 TArrL :< rest -> Just (Selection rest)
                  _ -> Nothing
                ) <$>
                dmSelection
@@ -206,8 +205,8 @@ viewType nameTy path dmSelection ty = do
               (snoc path TArrR)
               (fmap
                  (>>=
-                  \(Some f) -> case viewl f of
-                    TArrR :< rest -> Just (Some rest)
+                  \(Selection f) -> case viewl f of
+                    TArrR :< rest -> Just (Selection rest)
                     _ -> Nothing
                  )
                  dmSelection
@@ -229,8 +228,8 @@ viewType nameTy path dmSelection ty = do
               (Path.snoc path TForallArg)
               (fmap
                 (>>=
-                  \(Some f) -> case viewl f of
-                    Path.TForallArg :< rest -> Just (Some rest)
+                  \(Selection f) -> case viewl f of
+                    Path.TForallArg :< rest -> Just (Selection rest)
                     _ -> Nothing
                 )
                 dmSelection
@@ -243,9 +242,9 @@ viewType nameTy path dmSelection ty = do
               (snoc path TForallBody)
               (fmap
                  (>>=
-                  \(Some f) ->
+                  \(Selection f) ->
                    case viewl f of
-                     TForallBody :< rest -> Just (Some rest)
+                     TForallBody :< rest -> Just (Selection rest)
                      _ -> Nothing
                  )
                  dmSelection
@@ -268,7 +267,7 @@ viewType nameTy path dmSelection ty = do
     { _nodeHovered = dHoveredOrChild
     , _nodeFocus =
       leftmost
-      [ Some path <$ gate (current dHovered) eClicked
+      [ Selection path <$ gate (current dHovered) eClicked
       , _nodeFocus childInfo
       ]
     }
@@ -307,7 +306,7 @@ viewTerm nameTy name path dmSelection tm = do
         (\mSelection ->
            case mSelection of
              Nothing -> False
-             Just (Some path') ->
+             Just (Selection path') ->
                case viewl path' of
                  EmptyL -> True
                  _ :< _ -> False
@@ -369,8 +368,8 @@ viewTerm nameTy name path dmSelection tm = do
               (snoc path AppL)
               (
                (>>=
-               \(Some f) -> case viewl f of
-                 AppL :< rest -> Just (Some rest)
+               \(Selection f) -> case viewl f of
+                 AppL :< rest -> Just (Selection rest)
                  _ -> Nothing
                ) <$>
                dmSelection
@@ -393,8 +392,8 @@ viewTerm nameTy name path dmSelection tm = do
               (snoc path AppR)
               (fmap
                  (>>=
-                  \(Some f) -> case viewl f of
-                    AppR :< rest -> Just (Some rest)
+                  \(Selection f) -> case viewl f of
+                    AppR :< rest -> Just (Selection rest)
                     _ -> Nothing
                  )
                  dmSelection
@@ -416,8 +415,8 @@ viewTerm nameTy name path dmSelection tm = do
               (Path.snoc path Path.LamArg)
               (fmap
                 (>>=
-                  \(Some f) -> case viewl f of
-                    Path.LamArg :< rest -> Just (Some rest)
+                  \(Selection f) -> case viewl f of
+                    Path.LamArg :< rest -> Just (Selection rest)
                     _ -> Nothing
                 )
                 dmSelection
@@ -431,9 +430,9 @@ viewTerm nameTy name path dmSelection tm = do
               (snoc path LamBody)
               (
                (>>=
-               \(Some f) ->
+               \(Selection f) ->
                  case viewl f of
-                   LamBody :< rest -> Just (Some rest)
+                   LamBody :< rest -> Just (Selection rest)
                    _ -> Nothing
                ) <$>
                dmSelection
@@ -457,8 +456,8 @@ viewTerm nameTy name path dmSelection tm = do
               (Path.snoc path Path.LamAnnArg)
               (fmap
                 (>>=
-                  \(Some f) -> case viewl f of
-                    Path.LamAnnArg :< rest -> Just (Some rest)
+                  \(Selection f) -> case viewl f of
+                    Path.LamAnnArg :< rest -> Just (Selection rest)
                     _ -> Nothing
                 )
                 dmSelection
@@ -471,8 +470,8 @@ viewTerm nameTy name path dmSelection tm = do
               (Path.snoc path LamAnnType)
               (fmap
                 (>>=
-                  \(Some f) -> case viewl f of
-                    Path.LamAnnType :< rest -> Just (Some rest)
+                  \(Selection f) -> case viewl f of
+                    Path.LamAnnType :< rest -> Just (Selection rest)
                     _ -> Nothing
                 )
                 dmSelection
@@ -487,9 +486,9 @@ viewTerm nameTy name path dmSelection tm = do
               (snoc path LamAnnBody)
               (
                (>>=
-               \(Some f) ->
+               \(Selection f) ->
                  case viewl f of
-                   LamAnnBody :< rest -> Just (Some rest)
+                   LamAnnBody :< rest -> Just (Selection rest)
                    _ -> Nothing
                ) <$>
                dmSelection
@@ -520,7 +519,7 @@ viewTerm nameTy name path dmSelection tm = do
     { _nodeHovered = dHoveredOrChild
     , _nodeFocus =
       leftmost
-      [ Some path <$ gate (current dHovered) eClicked
+      [ Selection path <$ gate (current dHovered) eClicked
       , _nodeFocus childInfo
       ]
     }

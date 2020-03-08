@@ -4,22 +4,20 @@
 {-# language OverloadedLists, OverloadedStrings #-}
 {-# language PackageImports #-}
 {-# language RecursiveDo #-}
-{-# language ScopedTypeVariables #-}
+{-# language ScopedTypeVariables, TypeApplications #-}
 {-# language TypeFamilies #-}
 module App (app) where
 
 import qualified Debug.Trace as Debug
 
-import Control.Monad (when)
+import Control.Monad (guard, when)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.State (evalStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Functor (void)
-import "core" Data.Some (Some(..))
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Type.Equality ((:~:)(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import GHCJS.DOM.EventM (on, event, eventTarget, preventDefault)
@@ -34,7 +32,8 @@ import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex.Dom hiding (Delete, preventDefault)
 
 import qualified Edit
-import Path (Path, TargetInfo(..), ViewR(..), targetInfo, empty)
+import qualified Focus
+import Path (Path, TargetInfo(..), HasTargetInfo, ViewR(..), targetInfo, empty)
 import qualified Path
 import qualified Style
 import Syntax
@@ -130,12 +129,12 @@ menuInput = do
   holdDyn "" $ fmapMaybe id eUpdated
 
 data MenuAction a where
-  InsertLam :: Path a (Term ty tm) -> TargetInfo (Term ty tm) -> MenuAction a
-  InsertLamAnn :: Path a (Term ty tm) -> TargetInfo (Term ty tm) -> MenuAction a
-  InsertApp :: Path a (Term ty tm) -> TargetInfo (Term ty tm) -> MenuAction a
-  InsertVar :: Path a Name -> TargetInfo Name -> Name -> MenuAction a
-  InsertTArr :: Path a (Type ty) -> TargetInfo (Type ty) -> MenuAction a
-  AnnotateVar :: Path a Name -> TargetInfo Name -> MenuAction a
+  InsertLam :: Path a (Term ty tm) -> MenuAction a
+  InsertLamAnn :: Path a (Term ty tm) -> MenuAction a
+  InsertApp :: Path a (Term ty tm) -> MenuAction a
+  InsertVar :: Path a Name -> Name -> MenuAction a
+  InsertTArr :: Path a (Type ty) -> MenuAction a
+  AnnotateVar :: Path a Name -> MenuAction a
 
   DeleteTerm :: Path a (Term ty tm) -> MenuAction a
   DeleteType :: Path a (Type ty) -> MenuAction a
@@ -152,7 +151,7 @@ renderMenuAction selected action =
     InsertLam{} -> item "\\x -> _"
     InsertLamAnn{} -> item "\\(x : _) -> _"
     InsertApp{} -> item "_ _"
-    InsertVar _ _ n -> item $ unName n
+    InsertVar _ n -> item $ unName n
     AnnotateVar{} -> item "□ : _"
     InsertTArr{} -> item "_ -> _"
     DeleteTerm{} -> item "_"
@@ -172,13 +171,14 @@ renderMenuAction selected action =
       pure $ domEvent Click theElement
 
 menuItems ::
+  forall t m a b.
   (MonadHold t m, DomBuilder t m, MonadFix m) =>
+  HasTargetInfo b =>
   Event t () ->
   Dynamic t Text ->
   Path a b ->
-  TargetInfo b ->
   m (Dynamic t Int, Dynamic t (Vector (MenuAction a)))
-menuItems eNextItem dInputText path info = do
+menuItems eNextItem dInputText path = do
   rec
     dSelection :: Dynamic t Int <-
       holdDyn 0 $
@@ -188,24 +188,24 @@ menuItems eNextItem dInputText path info = do
         current dItems <@ eNextItem
       ]
     dItems <-
-      case info of
+      case targetInfo @b of
         TargetTerm ->
           pure $
           constDyn
-          [ InsertApp path info
-          , InsertLam path info
-          , InsertLamAnn path info
+          [ InsertApp path
+          , InsertLam path
+          , InsertLamAnn path
           ]
         TargetType ->
           pure $
           constDyn
-          [ InsertTArr path info
+          [ InsertTArr path
           ]
         TargetName ->
           pure $
             (\n ->
-               [ InsertVar path info $ N n
-               , AnnotateVar path info
+               [ InsertVar path $ N n
+               , AnnotateVar path
                ]
             ) <$>
             dInputText
@@ -243,16 +243,16 @@ menuForTarget ::
   , PerformEvent t m, MonadJSM (Performable m)
   , MonadJSM m, MonadFix m
   ) =>
+  HasTargetInfo b =>
   Event t () ->
   Event t () ->
   Path a b ->
-  TargetInfo b ->
   m (Event t (MenuAction a))
-menuForTarget eNextItem eEnter path target =
+menuForTarget eNextItem eEnter path =
   elAttr "div" ("style" =: "position: absolute" <> "class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
     dInputText <- elAttr "div" ("class" =: "dropdown-item") menuInput
-    (dSelection, dItems) <- menuItems eNextItem dInputText path target
+    (dSelection, dItems) <- menuItems eNextItem dInputText path
     eItemClicked :: Event t Int <-
       fmap switchDyn $
       bindDynamicM
@@ -275,7 +275,7 @@ menu ::
   Event t () ->
   Event t () ->
   Event t () ->
-  Dynamic t (Maybe (View.Selection (Syntax.Term ty tm))) ->
+  Dynamic t (Maybe (Focus.Selection (Syntax.Term ty tm))) ->
   m (Dynamic t Bool, Event t (MenuAction (Syntax.Term ty tm)))
 menu eOpen eClose eNextItem eEnter dSelection = do
   eAction <-
@@ -283,12 +283,7 @@ menu eOpen eClose eNextItem eEnter dSelection = do
     leftmost
     [ maybe
         (pure never)
-        (\(Some path) ->
-          case targetInfo path of
-            Left Refl ->
-              undefined
-            Right target ->
-              menuForTarget eNextItem eEnter path target
+        (\(Focus.Selection path) -> menuForTarget eNextItem eEnter path
         ) <$>
       current dSelection <@ eOpen
     , pure never <$ eClose
@@ -296,28 +291,28 @@ menu eOpen eClose eNextItem eEnter dSelection = do
   dOpen <- holdDyn False $ leftmost [True <$ eOpen, False <$ eClose]
   pure (dOpen, eAction)
 
-runAction :: MenuAction a -> (Some (Path a), a) -> (Some (Path a), a)
-runAction action (Some oldPath, old) =
+runAction :: MenuAction a -> (Focus.Selection a, a) -> (Focus.Selection a, a)
+runAction action (Focus.Selection oldPath, old) =
   case action of
-    InsertLam path info ->
-      case Edit.edit path info (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) old of
-        Left err -> Debug.traceShow err (Some oldPath, old)
-        Right (newPath, _, new) -> (Some newPath, new)
-    InsertLamAnn path info ->
-      case Edit.edit path info (Edit.InsertTerm (Syntax.LamAnn "x" Syntax.THole $ lift Syntax.Hole) (Path.singleton Path.LamAnnType)) old of
-        Left err -> Debug.traceShow err (Some oldPath, old)
-        Right (newPath, _, new) -> (Some newPath, new)
-    InsertApp path info ->
-      case Edit.edit path info (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
-        Left err -> Debug.traceShow err (Some oldPath, old)
-        Right (newPath, _, new) -> (Some newPath, new)
-    InsertVar path info n ->
-      case Edit.edit path info (Edit.ModifyName $ const n) old of
-        Left err -> Debug.traceShow err (Some oldPath, old)
-        Right (newPath, _, new) -> (Some newPath, new)
-    AnnotateVar path TargetName ->
+    InsertLam path ->
+      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) old of
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+    InsertLamAnn path ->
+      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.LamAnn "x" Syntax.THole $ lift Syntax.Hole) (Path.singleton Path.LamAnnType)) old of
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+    InsertApp path ->
+      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+    InsertVar path n ->
+      case Edit.edit path targetInfo (Edit.ModifyName $ const n) old of
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+    AnnotateVar path ->
       case Path.viewr path of
-        EmptyR -> (Some oldPath, old)
+        EmptyR -> (Focus.Selection oldPath, old)
         ps :> p ->
           case p of
             Path.Var-> error "todo: annotate var"
@@ -325,7 +320,7 @@ runAction action (Some oldPath, old) =
             Path.TForallArg -> error "todo: annotate tvar"
             Path.LamAnnArg->
               case Zipper.downTo ps $ Zipper.toZipper old of
-                Nothing -> (Some oldPath, old)
+                Nothing -> (Focus.Selection oldPath, old)
                 Just z ->
                   case Zipper._focus z of
                     Syntax.LamAnn n _ body ->
@@ -335,11 +330,11 @@ runAction action (Some oldPath, old) =
                           z { Zipper._focus = Syntax.LamAnn n THole body }
                         newPath = Path.snoc ps Path.LamAnnType
                       in
-                        (Some newPath, new)
+                        (Focus.Selection newPath, new)
                     _ -> undefined
             Path.LamArg ->
               case Zipper.downTo ps $ Zipper.toZipper old of
-                Nothing -> (Some oldPath, old)
+                Nothing -> (Focus.Selection oldPath, old)
                 Just z ->
                   case Zipper._focus z of
                     Syntax.Lam n body ->
@@ -349,21 +344,21 @@ runAction action (Some oldPath, old) =
                           z { Zipper._focus = Syntax.LamAnn n THole body }
                         newPath = Path.snoc ps Path.LamAnnType
                       in
-                        (Some newPath, new)
+                        (Focus.Selection newPath, new)
                     _ -> undefined
-    InsertTArr path info ->
-      case Edit.edit path info (Edit.InsertType (Syntax.TArr Syntax.THole Syntax.THole) (Path.singleton Path.TArrL)) old of
-        Left err -> Debug.traceShow err (Some oldPath, old)
-        Right (newPath, _, new) -> (Some newPath, new)
+    InsertTArr path ->
+      case Edit.edit path targetInfo (Edit.InsertType (Syntax.TArr Syntax.THole Syntax.THole) (Path.singleton Path.TArrL)) old of
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) -> (Focus.Selection newPath, new)
     DeleteTerm path ->
       case Edit.edit path TargetTerm Edit.DeleteTerm old of
-        Left err -> Debug.traceShow err (Some oldPath, old)
-        Right (newPath, _, new) -> (Some newPath, new)
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) -> (Focus.Selection newPath, new)
     DeleteType path ->
       case Edit.edit path TargetType Edit.DeleteType old of
-        Left err -> Debug.traceShow err (Some oldPath, old)
-        Right (newPath, _, new) -> (Some newPath, new)
-    Other{} -> (Some oldPath, old)
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+    Other{} -> (Focus.Selection oldPath, old)
 
 app ::
   forall t m.
@@ -380,20 +375,29 @@ app = do
       fmapMaybe (\case; "Space" -> Just (); _ -> Nothing) eKeyPressed
     eEscape =
       fmapMaybe (\case; "Escape" -> Just (); _ -> Nothing) eKeyPressed
-    eNextItem =
+    eTab =
       fmapMaybe (\case; "Tab" -> Just (); _ -> Nothing) eKeyPressed
     eEnter =
       fmapMaybe (\case; "Enter" -> Just (); _ -> Nothing) eKeyPressed
     eDelete =
       fmapMaybe (\case; "Delete" -> Just (); _ -> Nothing) eKeyPressed
   rec
+    let
+      eNextHole =
+        (\(Focus.Selection p, a) ->
+           case Focus.nextHole p a of
+             Nothing -> (Focus.Selection p, a)
+             Just p' -> (p', a)
+        ) <$
+        gate (not <$> current dMenuOpen) eTab
     dPathTerm <-
       foldDyn
         ($)
-        (Some Path.empty, App (App (Var "f") (Var "x")) Hole)
+        (Focus.Selection Path.empty, App (App (Var "f") (Var "x")) Hole)
         (mergeWith (.)
          [ runAction <$> eMenuAction
          , runAction <$> eDeleteNode
+         , eNextHole
          ]
         )
     let dPath = fst <$> dPathTerm
@@ -401,7 +405,7 @@ app = do
     dSelection <-
       holdDyn Nothing $
       leftmost [Just <$> updated dPath, Just <$> eSelection]
-    eSelection :: Event t (View.Selection (Syntax.Term Name Name)) <-
+    eSelection :: Event t (Focus.Selection (Syntax.Term Name Name)) <-
       fmap switchDyn $
       bindDynamicM
         (fmap View._nodeFocus . viewTerm id id empty dSelection)
@@ -409,16 +413,13 @@ app = do
     let
       eDeleteNode =
         attachWithMaybe
-          (\(open, m_sel) _ ->
-             if open
-             then Nothing
-             else do
-               Some path <- m_sel
-               case targetInfo path of
-                 Left Refl -> undefined
-                 Right TargetTerm -> Just $ DeleteTerm path
-                 Right TargetType -> Just $ DeleteType path
-                 Right{} -> Nothing
+          (\(open, m_sel) _ -> do
+             guard $ not open
+             Focus.Selection (path :: Path (Syntax.Term Name Name) x) <- m_sel
+             case targetInfo @x of
+               TargetTerm -> Just $ DeleteTerm path
+               TargetType -> Just $ DeleteType path
+               TargetName -> Nothing
           )
           ((,) <$> current dMenuOpen <*> current dSelection)
           eDelete
@@ -426,7 +427,7 @@ app = do
       eOpenMenu = eSpace
       eCloseMenu = eEscape <> void eSelection <> void eMenuAction
     (dMenuOpen, eMenuAction) <-
-      menu eOpenMenu eCloseMenu eNextItem eEnter dSelection
+      menu eOpenMenu eCloseMenu eTab eEnter dSelection
     let
       dType ::
         Dynamic
@@ -447,6 +448,8 @@ app = do
           mempty
           Path.empty <$>
         dTerm
+    dyn_ $ el "div" . text . Text.pack . show <$> dTerm
+    dyn_ $ (el "div" . text . maybe "Nothing" (\(Focus.Selection p) -> Text.pack $ show p)) <$> dSelection
     dyn_ $
       (\case
          Left err ->
