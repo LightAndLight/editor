@@ -174,3 +174,6 @@ nextHole = goDown Path.empty []
                 Syntax.TForall _ val' ->
                   goDown (Path.snoc prefix p) bs suffix' (Bound.fromScope val')
                 _ -> Nothing
+
+prevHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
+prevHole = _
