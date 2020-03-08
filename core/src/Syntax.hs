@@ -192,7 +192,6 @@ printKind ki =
 runSubst :: Type ty -> Type ty
 runSubst ty =
   case ty of
-    TSubst a bs | Vector.length bs == 0 -> a
     TSubst a bs ->
       case a of
         TUnsolved _ body ->

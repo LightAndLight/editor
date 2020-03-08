@@ -8,13 +8,14 @@ import Bound.Var (unvar)
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, gets, modify)
-import Data.Foldable (traverse_)
+import Data.Foldable (toList, traverse_)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Type.Equality ((:~:)(..))
+import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
 
@@ -205,7 +206,7 @@ inferKind ::
   Type ty' ->
   m Kind
 inferKind nameTy ctxG ctx ty =
-  case ty of
+  case runSubst ty of
     THole -> KMeta <$> freshKMeta
     TMeta n -> lookupTMeta n
     TVar a ->
@@ -323,6 +324,64 @@ typeMismatch ::
 typeMismatch nameTy expected actual =
   throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
 
+inversion ::
+  ( MonadState (TCState ty) m, MonadError TypeError m
+  , Eq ty'
+  ) =>
+  (ty' -> Name) ->
+  (Name -> Maybe Kind) ->
+  (ty' -> Maybe Kind) ->
+  TMeta ->
+  Vector (Type ty') ->
+  Type ty' ->
+  m ()
+inversion nameTy ctxG ctx n bs ty = do
+  k <- lookupTMeta n
+  case k of
+    KUnsolved ns _ -> do
+      let
+        lbs = length bs
+        lns = length ns
+      when (lbs /= lns) . throwError $ ArityMismatch lns lbs
+      traverse_
+        (\(nn, b) -> checkKind nameTy ctxG ctx b (snd nn))
+        (Vector.zip ns bs)
+      let
+        ty' =
+          TUnsolved ns . Bound.toScope <$>
+          traverse
+            (\v ->
+                case Vector.findIndex ((nameTy v ==) . fst) ns of
+                  Nothing -> Left v
+                  Just ix -> Right $ Bound.B ix
+            )
+            (runSubst ty)
+      case ty' of
+        Left v -> throwError $ Escape (nameTy v)
+        Right sol -> do
+          checkKind absurd ctxG absurd sol k
+          solveTMeta n sol
+    KMeta kn -> error "todo" kn
+    _ -> undefined
+
+inversion0 ::
+  ( MonadState (TCState ty) m, MonadError TypeError m
+  , Eq ty'
+  ) =>
+  (ty' -> Name) ->
+  (Name -> Maybe Kind) ->
+  (ty' -> Maybe Kind) ->
+  TMeta ->
+  Type ty' ->
+  m ()
+inversion0 nameTy ctxG _ n ty = do
+  case TUnsolved mempty . Bound.toScope <$> traverse (const Nothing) ty of
+    Nothing -> throwError $ Escape (nameTy . head $ toList ty)
+    Just ty' -> do
+      k <- lookupTMeta n
+      checkKind absurd ctxG absurd ty' k
+      solveTMeta n ty'
+
 unifyType ::
   ( MonadState (TCState ty) m, MonadError TypeError m
   , Eq ty'
@@ -336,21 +395,20 @@ unifyType ::
 unifyType nameTy ctxG ctx expected actual =
   case runSubst expected of
     THole -> pure ()
-    TMeta n ->
-      case runSubst actual of
-        TMeta n' -> solveTMeta n (TMeta n')
-        THole -> pure ()
-        _ -> typeMismatch nameTy expected actual
+    TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs actual
+    TMeta n -> inversion0 nameTy ctxG ctx n actual
     TVar a ->
       case runSubst actual of
         TVar a' | a == a' -> pure ()
-        TMeta n -> error "todo" n
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TName a ->
       case runSubst actual of
         TName a' | a == a' -> pure ()
-        TMeta n -> error "todo" n
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TForall _ body ->
@@ -363,7 +421,8 @@ unifyType nameTy ctxG ctx expected actual =
             (unvar (\() -> Just k) ctx)
             (Bound.fromScope body)
             (Bound.fromScope body')
-        TMeta n -> error "todo" n
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TArr a b ->
@@ -371,10 +430,8 @@ unifyType nameTy ctxG ctx expected actual =
         TArr a' b' -> do
           unifyType nameTy ctxG ctx a a'
           unifyType nameTy ctxG ctx b b'
-        TMeta n -> do
-          case traverse (const Nothing) expected of
-            Nothing -> error "todo"
-            Just sol -> solveTMeta n sol
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TUnsolved ns body ->
@@ -393,41 +450,10 @@ unifyType nameTy ctxG ctx expected actual =
             (unvar (Just . snd . (ns' Vector.!)) absurd)
             (Bound.fromScope body)
             (Bound.fromScope body')
-        TMeta n -> error "todo" n
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
-    TSubst (TMeta n) bs -> do
-      k <- lookupTMeta n
-      case k of
-        KUnsolved ns bodyK -> do
-          let
-            lbs = length bs
-            lns = length ns
-          when (lbs /= lns) . throwError $ ArityMismatch lns lbs
-          traverse_
-            (\(nn, b) -> checkKind nameTy ctxG ctx b (snd nn))
-            (Vector.zip ns bs)
-          let
-            actual' =
-              traverse
-                (\v ->
-                   case Vector.findIndex ((nameTy v ==) . fst) ns of
-                     Nothing -> Left v
-                     Just ix -> Right $ Bound.B ix
-                )
-                actual
-          case actual' of
-            Left v -> throwError $ Escape (nameTy v)
-            Right sol -> do
-              checkKind
-                (unvar (fst . (ns Vector.!)) absurd)
-                ctxG
-                (unvar (Just . snd . (ns Vector.!)) absurd)
-                sol
-                bodyK
-              solveTMeta n $ TUnsolved ns (Bound.toScope sol)
-        KMeta kn -> error "todo" kn
-        _ -> undefined
     TSubst{} -> undefined
 
 check ::
