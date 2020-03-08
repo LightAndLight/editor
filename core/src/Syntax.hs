@@ -225,5 +225,5 @@ printType nameTy ty =
       "subst(" <>
       printType nameTy a <>
       ", " <>
-      commaSep (printType nameTy) bs <>
+      "[" <> commaSep (printType nameTy) bs <> "]" <>
       ")"

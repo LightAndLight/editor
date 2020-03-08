@@ -140,7 +140,7 @@ solveKMeta n' k' = do
       case Seq.viewr prefix of
         Seq.EmptyR -> undefined
         prefix' Seq.:> entry
-          | _kentryMeta entry == n ->
+          | KEntry nn <- entry, n == nn ->
             let
               appendSolving =
                 flip $ foldl (\acc x -> acc Seq.|> substKMeta_Entry (n, k) x)
@@ -225,6 +225,7 @@ inferKind nameTy ctxG ctx ty =
       checkKind nameTy ctxG ctx b KType
       pure KType
     TUnsolved ns body ->
+      KUnsolved ns <$>
       inferKind
         (unvar (fst . (ns Vector.!)) absurd)
         ctxG
@@ -286,11 +287,12 @@ appendHoles Nil hs = hs
 appendHoles (Cons p ns ty rest) hs = Cons p ns ty $ appendHoles rest hs
 
 solveTMeta ::
-  MonadState (TCState ty) m =>
+  (MonadError TypeError m, MonadState (TCState ty) m) =>
+  (Name -> Maybe Kind) ->
   TMeta ->
   Type Void ->
   m ()
-solveTMeta n' t' = do
+solveTMeta ctxG n' t' = do
   prefix <- gets _tcEntries
   let suffix = mempty
   let sig = mempty
@@ -300,13 +302,14 @@ solveTMeta n' t' = do
       case Seq.viewr prefix of
         Seq.EmptyR -> undefined
         prefix' Seq.:> entry
-          | _tentryMeta entry == n ->
+          | TEntry nn k <- entry, n == nn -> do
+            checkKind absurd ctxG absurd t k
             modify $
-            \tc ->
-              tc
-              { _tcEntries = prefix <> sig <> suffix
-              , _tcSubst = Map.insert n t $ substTMeta (n, t) <$> _tcSubst tc
-              }
+              \tc ->
+                tc
+                { _tcEntries = prefix <> sig <> suffix
+                , _tcSubst = Map.insert n t $ substTMeta (n, t) <$> _tcSubst tc
+                }
           | otherwise ->
             go prefix' suffix (entry Seq.<| sig) n t
 
@@ -358,9 +361,7 @@ inversion nameTy ctxG ctx n bs ty = do
             (runSubst ty)
       case ty' of
         Left v -> throwError $ Escape (nameTy v)
-        Right sol -> do
-          checkKind absurd ctxG absurd sol k
-          solveTMeta n sol
+        Right sol -> solveTMeta ctxG n sol
     KMeta kn -> error "todo" kn
     _ -> undefined
 
@@ -377,10 +378,7 @@ inversion0 ::
 inversion0 nameTy ctxG _ n ty = do
   case TUnsolved mempty . Bound.toScope <$> traverse (const Nothing) ty of
     Nothing -> throwError $ Escape (nameTy . head $ toList ty)
-    Just ty' -> do
-      k <- lookupTMeta n
-      checkKind absurd ctxG absurd ty' k
-      solveTMeta n ty'
+    Just ty' -> solveTMeta ctxG n ty'
 
 unifyType ::
   ( MonadState (TCState ty) m, MonadError TypeError m
