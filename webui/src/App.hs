@@ -386,7 +386,10 @@ app ::
 app = do
   (eKeyDown, eKeyUp) <- keysDownUp
   dKeysHeld <- keysHeld eKeyDown eKeyUp
-  let dShiftMod = (\ks -> "LeftShift" `Set.member` ks || "RightShift" `Set.member` ks) <$> dKeysHeld
+  let
+    dShiftMod =
+      (\ks -> "ShiftLeft" `Set.member` ks || "ShiftRight" `Set.member` ks) <$>
+      dKeysHeld
   let eKeyPressed = keyPressed eKeyDown dKeysHeld
   let
     eSpace =
@@ -394,9 +397,11 @@ app = do
     eEscape =
       fmapMaybe (\case; "Escape" -> Just (); _ -> Nothing) eKeyPressed
     eTab =
+      gate (not <$> current dShiftMod) $
       fmapMaybe (\case; "Tab" -> Just (); _ -> Nothing) eKeyPressed
     eShiftTab =
-      gate (current dShiftMod) eTab
+      gate (current dShiftMod) $
+      fmapMaybe (\case; "Tab" -> Just (); _ -> Nothing) eKeyPressed
     eEnter =
       fmapMaybe (\case; "Enter" -> Just (); _ -> Nothing) eKeyPressed
     eDelete =
@@ -425,6 +430,7 @@ app = do
          [ runAction <$> eMenuAction
          , runAction <$> eDeleteNode
          , eNextHole
+         , ePrevHole
          , (\p (_, a) -> (p, a)) <$> eSelection
          ]
         )

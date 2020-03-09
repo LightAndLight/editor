@@ -176,4 +176,168 @@ nextHole = goDown Path.empty []
                 _ -> Nothing
 
 prevHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
-prevHole = _
+prevHole = goDown Path.empty []
+  where
+    continue :: forall x. [Branch x] -> Maybe (Selection x)
+    continue bs =
+      case bs of
+        [] -> Nothing
+        Branch prefix' val' : bbs -> search prefix' bbs val'
+
+    search ::
+      forall x a.
+      HasTargetInfo a =>
+      Path x a ->
+      [Branch x] ->
+      a ->
+      Maybe (Selection x)
+    search prefix bs val =
+      case targetInfo @a of
+        TargetTerm ->
+          case val of
+            Syntax.Hole -> Just $ Selection prefix
+            Syntax.Var{} -> continue bs
+            Syntax.Name{} -> continue bs
+            Syntax.App a b ->
+              search
+                (Path.snoc prefix AppR)
+                (Branch (Path.snoc prefix AppL) a : bs)
+                b
+            Syntax.Lam n body ->
+              search
+                (Path.snoc prefix LamBody)
+                (Branch (Path.snoc prefix LamArg) n : bs)
+                (Bound.fromScope body)
+            Syntax.LamAnn n ty body ->
+              search
+                (Path.snoc prefix LamAnnBody)
+                (Branch (Path.snoc prefix LamAnnType) ty :
+                 Branch (Path.snoc prefix LamAnnArg) n :
+                 bs
+                )
+                (Bound.fromScope body)
+        TargetType ->
+          case val of
+            Syntax.THole -> Just $ Selection prefix
+            Syntax.TMeta{} -> continue bs
+            Syntax.TVar{} -> continue bs
+            Syntax.TName{} -> continue bs
+            Syntax.TForall n body ->
+              search
+                (Path.snoc prefix TForallBody)
+                (Branch (Path.snoc prefix TForallArg) n : bs)
+                (Bound.fromScope body)
+            Syntax.TArr a b ->
+              search
+                (Path.snoc prefix TArrR)
+                (Branch (Path.snoc prefix TArrL) a : bs)
+                b
+            Syntax.TUnsolved{} -> error "todo"
+            Syntax.TSubst{} -> error "todo"
+        TargetName -> continue bs
+
+    goDown ::
+      forall x a b.
+      HasTargetInfo b =>
+      Path x a ->
+      [Branch x] ->
+      Path a b ->
+      a ->
+      Maybe (Selection x)
+    goDown prefix bs suffix val =
+      case Path.viewl suffix of
+        Path.EmptyL -> continue bs
+        p Path.:< suffix' -> do
+          case p of
+            AppL ->
+              case val of
+                Syntax.App val' _ ->
+                  goDown (Path.snoc prefix p) bs suffix' val'
+                _ -> Nothing
+            AppR ->
+              case val of
+                Syntax.App x val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix AppL) x : bs)
+                    suffix'
+                    val'
+                _ -> Nothing
+            Var ->
+              case val of
+                Syntax.Var val' ->
+                  goDown (Path.snoc prefix p) bs suffix' val'
+                _ -> Nothing
+            LamArg ->
+              case val of
+                Syntax.Lam val' _ ->
+                  goDown (Path.snoc prefix p) bs suffix' val'
+                _ -> Nothing
+            LamBody ->
+              case val of
+                Syntax.Lam n val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix LamArg) n : bs)
+                    suffix'
+                    (Bound.fromScope val')
+                _ -> Nothing
+            LamAnnArg ->
+              case val of
+                Syntax.LamAnn val' _ _ ->
+                  goDown (Path.snoc prefix p) bs suffix' val'
+                _ -> Nothing
+            LamAnnType ->
+              case val of
+                Syntax.LamAnn n val' _ ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix LamAnnArg) n : bs)
+                    suffix'
+                    val'
+                _ -> Nothing
+            LamAnnBody ->
+              case val of
+                Syntax.LamAnn n ty val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix LamAnnType) ty :
+                     Branch (Path.snoc prefix LamAnnArg) n :
+                     bs
+                    )
+                    suffix'
+                    (Bound.fromScope val')
+                _ -> Nothing
+            TVar ->
+              case val of
+                Syntax.TVar val' ->
+                  goDown (Path.snoc prefix p) bs suffix' val'
+                _ -> Nothing
+            TArrL ->
+              case val of
+                Syntax.TArr val' _ ->
+                  goDown (Path.snoc prefix p) bs suffix' val'
+                _ -> Nothing
+            TArrR ->
+              case val of
+                Syntax.TArr x val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix TArrL) x : bs)
+                    suffix'
+                    val'
+                _ -> Nothing
+            TForallArg ->
+              case val of
+                Syntax.TForall val' _ ->
+                  goDown (Path.snoc prefix p) bs suffix' val'
+                _ -> Nothing
+            TForallBody ->
+              case val of
+                Syntax.TForall n val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix TForallArg) n: bs)
+                    suffix'
+                    (Bound.fromScope val')
+                _ -> Nothing
