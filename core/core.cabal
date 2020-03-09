@@ -28,6 +28,7 @@ library
                      , bifunctors
                      , containers
                      , deriving-compat
+                     , lens
                      , mtl
                      , text
                      , vector

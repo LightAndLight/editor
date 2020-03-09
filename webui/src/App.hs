@@ -330,8 +330,6 @@ runAction action (Focus.Selection oldPath, old) =
         EmptyR -> (Focus.Selection oldPath, old)
         ps :> p ->
           case p of
-            Path.Var-> error "todo: annotate var"
-            Path.TVar-> error "todo: annotate tvar"
             Path.TForallArg -> error "todo: annotate tvar"
             Path.LamAnnArg->
               case Zipper.downTo ps $ Zipper.toZipper old of

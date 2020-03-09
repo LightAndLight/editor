@@ -1,10 +1,11 @@
 {-# language FlexibleContexts #-}
 {-# language GADTs, StandaloneDeriving #-}
-{-# language ScopedTypeVariables #-}
+{-# language ScopedTypeVariables, TypeApplications #-}
 module Typecheck where
 
 import qualified Bound
 import Bound.Var (unvar)
+import Control.Lens.Indexed (itraverse_)
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, gets, modify)
@@ -14,7 +15,6 @@ import qualified Data.Map as Map
 import Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import Data.Type.Equality ((:~:)(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
@@ -41,10 +41,15 @@ substKMeta_Entry s (TEntry n k) = TEntry n $ substKMeta s k
 substKMeta_Entry _ (KEntry n) = KEntry n
 
 data Holes ty tm where
-  Cons ::
+  ConsHole ::
     Path (Term ty tm) (Term ty' tm') ->
     (ty' -> Name) ->
     Type ty' ->
+    Holes ty tm ->
+    Holes ty tm
+  ConsTHole ::
+    Path (Term ty tm) (Type ty') ->
+    Kind ->
     Holes ty tm ->
     Holes ty tm
   Nil :: Holes ty tm
@@ -53,8 +58,19 @@ substTMetas_Holes :: Map TMeta (Type Void) -> Holes ty tm -> Holes ty tm
 substTMetas_Holes s hs =
   case hs of
     Nil -> Nil
-    Cons p ns ty rest ->
-      Cons p ns (substTMetas s ty) $ substTMetas_Holes s rest
+    ConsHole p ns ty rest ->
+      ConsHole p ns (substTMetas s ty) $ substTMetas_Holes s rest
+    ConsTHole p k rest ->
+      ConsTHole p k $ substTMetas_Holes s rest
+
+substKMetas_Holes :: Map KMeta Kind -> Holes ty tm -> Holes ty tm
+substKMetas_Holes s hs =
+  case hs of
+    Nil -> Nil
+    ConsHole p ns ty rest ->
+      ConsHole p ns ty $ substKMetas_Holes s rest
+    ConsTHole p k rest ->
+      ConsTHole p (substKMetas s k) $ substKMetas_Holes s rest
 
 applySolutions_Holes ::
   MonadState (TCState ty tm) m =>
@@ -62,6 +78,13 @@ applySolutions_Holes ::
 applySolutions_Holes = do
   substs <- gets _tcSubst
   modify $ \tc -> tc { _tcHoles = substTMetas_Holes substs (_tcHoles tc) }
+
+applySolutions_THoles ::
+  MonadState (TCState ty tm) m =>
+  m ()
+applySolutions_THoles = do
+  substs <- gets _tcKindSubst
+  modify $ \tc -> tc { _tcHoles = substKMetas_Holes substs (_tcHoles tc) }
 
 addHole ::
   MonadState (TCState ty tm) m =>
@@ -71,22 +94,21 @@ addHole ::
   m ()
 addHole path nameTy t =
   modify $
-  \tc -> tc { _tcHoles = Cons path nameTy t (_tcHoles tc) }
+  \tc -> tc { _tcHoles = ConsHole path nameTy t (_tcHoles tc) }
 
-updateHole ::
-  Path (Term ty tm) (Term ty' v) ->
-  Type ty' ->
-  Holes ty tm ->
-  Holes ty tm
-updateHole _ _ Nil = Nil
-updateHole p t (Cons p' n t' rest) =
-  case Path.eqPath p p' of
-    Nothing -> Cons p' n t' (updateHole p t rest)
-    Just Refl -> Cons p' n t (updateHole p t rest)
+addTHole ::
+  MonadState (TCState ty tm) m =>
+  Path (Term ty tm) (Type ty') ->
+  Kind ->
+  m ()
+addTHole path t =
+  modify $
+  \tc -> tc { _tcHoles = ConsTHole path t (_tcHoles tc) }
 
 appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
 appendHoles Nil hs = hs
-appendHoles (Cons p ns ty rest) hs = Cons p ns ty $ appendHoles rest hs
+appendHoles (ConsHole p ns ty rest) hs = ConsHole p ns ty $ appendHoles rest hs
+appendHoles (ConsTHole p k rest) hs = ConsTHole p k $ appendHoles rest hs
 
 data TCState ty tm
   = TCState
@@ -94,6 +116,7 @@ data TCState ty tm
   , _tcKindSupply :: Int
   , _tcEntries :: Seq Entry
   , _tcSubst :: Map TMeta (Type Void)
+  , _tcKindSubst :: Map KMeta Kind
   , _tcHoles :: Holes ty tm
   }
 
@@ -104,6 +127,7 @@ emptyTCState =
   , _tcKindSupply = 0
   , _tcEntries = mempty
   , _tcSubst = mempty
+  , _tcKindSubst = mempty
   , _tcHoles = Nil
   }
 
@@ -200,6 +224,7 @@ solveKMeta n' k' = do
               tc
               { _tcEntries =
                 appendSolving suffix $ appendSolving sig prefix
+              , _tcKindSubst = Map.insert n k $ substKMeta (n, k) <$> _tcKindSubst tc
               }
           | otherwise ->
             if occursK_Entry n entry
@@ -241,23 +266,29 @@ checkKind ::
   (ty' -> Name) ->
   (Name -> Maybe Kind) ->
   (ty' -> Maybe Kind) ->
+  Path (Term ty tm) (Type ty') ->
   Type ty' ->
   Kind ->
   m ()
-checkKind nameTy ctxG ctx ty ki = do
-  ki' <- inferKind nameTy ctxG ctx ty
+checkKind nameTy ctxG ctx path ty ki = do
+  ki' <- inferKind nameTy ctxG ctx path ty
   unifyKind ki ki'
+  applySolutions_THoles
 
 inferKind ::
   (MonadState (TCState ty tm) m, MonadError TypeError m) =>
   (ty' -> Name) ->
   (Name -> Maybe Kind) ->
   (ty' -> Maybe Kind) ->
+  Path (Term ty tm) (Type ty') ->
   Type ty' ->
   m Kind
-inferKind nameTy ctxG ctx ty =
+inferKind nameTy ctxG ctx path ty =
   case runSubst ty of
-    THole -> KMeta <$> freshKMeta
+    THole -> do
+      k <- KMeta <$> freshKMeta
+      addTHole path k
+      pure k
     TMeta n -> lookupTMeta n
     TVar a ->
       maybe (throwError . NotInScope $ nameTy a) pure (ctx a)
@@ -269,10 +300,11 @@ inferKind nameTy ctxG ctx ty =
         (unvar (\() -> n) nameTy)
         ctxG
         (unvar (\() -> Just k) ctx)
+        (Path.snoc path Path.TForallBody)
         (Bound.fromScope body)
     TArr a b -> do
-      checkKind nameTy ctxG ctx a KType
-      checkKind nameTy ctxG ctx b KType
+      checkKind nameTy ctxG ctx (Path.snoc path Path.TArrL) a KType
+      checkKind nameTy ctxG ctx (Path.snoc path Path.TArrR) b KType
       pure KType
     TUnsolved ns body ->
       KUnsolved ns <$>
@@ -280,9 +312,10 @@ inferKind nameTy ctxG ctx ty =
         (unvar (fst . (ns Vector.!)) absurd)
         ctxG
         (unvar (Just . snd . (ns Vector.!)) absurd)
+        (Path.snoc path Path.TUnsolvedBody)
         (Bound.fromScope body)
     TSubst a bs -> do
-      aKind <- inferKind nameTy ctxG ctx a
+      aKind <- inferKind nameTy ctxG ctx (Path.snoc path Path.TSubstL) a
       case aKind of
         KUnsolved ns bodyKind ->
           let
@@ -292,19 +325,30 @@ inferKind nameTy ctxG ctx ty =
             if lns == lbs
             then
               bodyKind <$
-              traverse_
-                (\(x, y) -> checkKind nameTy ctxG ctx x (snd y))
+              itraverse_
+                (\i (x, y) ->
+                   checkKind
+                     nameTy
+                     ctxG
+                     ctx
+                     (Path.snoc path $ Path.TSubstR i)
+                     x
+                     (snd y)
+                )
                 (Vector.zip bs ns)
             else throwError $ ArityMismatch lns lbs
         _ -> throwError $ ExpectedKUnsolved aKind
 
 solveTMeta ::
   (MonadError TypeError m, MonadState (TCState ty tm) m) =>
+  (ty' -> Name) ->
   (Name -> Maybe Kind) ->
+  (ty' -> Maybe Kind) ->
+  Path (Term ty tm) (Type ty') ->
   TMeta ->
   Type Void ->
   m ()
-solveTMeta ctxG n' t' = do
+solveTMeta nameTy ctxG ctx path n' t' = do
   prefix <- gets _tcEntries
   let suffix = mempty
   let sig = mempty
@@ -315,7 +359,7 @@ solveTMeta ctxG n' t' = do
         Seq.EmptyR -> undefined
         prefix' Seq.:> entry
           | TEntry nn k <- entry, n == nn -> do
-            checkKind absurd ctxG absurd t k
+            checkKind nameTy ctxG ctx path (absurd <$> t) k
             modify $
               \tc ->
                 tc
@@ -346,11 +390,12 @@ inversion ::
   (ty' -> Name) ->
   (Name -> Maybe Kind) ->
   (ty' -> Maybe Kind) ->
+  Path (Term ty tm) (Type ty') ->
   TMeta ->
   Vector (Type ty') ->
   Type ty' ->
   m ()
-inversion nameTy ctxG ctx n bs ty = do
+inversion nameTy ctxG ctx path n bs ty = do
   k <- lookupTMeta n
   case k of
     KUnsolved ns _ -> do
@@ -358,8 +403,16 @@ inversion nameTy ctxG ctx n bs ty = do
         lbs = length bs
         lns = length ns
       when (lbs /= lns) . throwError $ ArityMismatch lns lbs
-      traverse_
-        (\(nn, b) -> checkKind nameTy ctxG ctx b (snd nn))
+      itraverse_
+        (\i (nn, b) ->
+           checkKind
+             nameTy
+             ctxG
+             ctx
+             (Path.snoc path $ Path.TSubstR i)
+             b
+             (snd nn)
+        )
         (Vector.zip ns bs)
       let
         ty' =
@@ -373,7 +426,7 @@ inversion nameTy ctxG ctx n bs ty = do
             (runSubst ty)
       case ty' of
         Left v -> throwError $ Escape (nameTy v)
-        Right sol -> solveTMeta ctxG n sol
+        Right sol -> solveTMeta nameTy ctxG ctx path n sol
     KMeta kn -> error "todo" kn
     _ -> undefined
 
@@ -384,13 +437,14 @@ inversion0 ::
   (ty' -> Name) ->
   (Name -> Maybe Kind) ->
   (ty' -> Maybe Kind) ->
+  Path (Term ty tm) (Type ty') ->
   TMeta ->
   Type ty' ->
   m ()
-inversion0 nameTy ctxG _ n ty = do
+inversion0 nameTy ctxG ctx path n ty = do
   case TUnsolved mempty . Bound.toScope <$> traverse (const Nothing) ty of
     Nothing -> throwError $ Escape (nameTy . head $ toList ty)
-    Just ty' -> solveTMeta ctxG n ty'
+    Just ty' -> solveTMeta nameTy ctxG ctx path n ty'
 
 unifyType ::
   ( MonadState (TCState ty tm) m, MonadError TypeError m
@@ -399,26 +453,27 @@ unifyType ::
   (ty' -> Name) ->
   (Name -> Maybe Kind) ->
   (ty' -> Maybe Kind) ->
+  Path (Term ty tm) (Type ty') ->
   Type ty' ->
   Type ty' ->
   m ()
-unifyType nameTy ctxG ctx expected actual =
+unifyType nameTy ctxG ctx path expected actual =
   case runSubst expected of
     THole -> pure ()
-    TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs actual
-    TMeta n -> inversion0 nameTy ctxG ctx n actual
+    TSubst (TMeta n) bs -> inversion nameTy ctxG ctx path n bs actual
+    TMeta n -> inversion0 nameTy ctxG ctx path n actual
     TVar a ->
       case runSubst actual of
         TVar a' | a == a' -> pure ()
-        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
-        TMeta n -> inversion0 nameTy ctxG ctx n expected
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx path n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx path n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TName a ->
       case runSubst actual of
         TName a' | a == a' -> pure ()
-        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
-        TMeta n -> inversion0 nameTy ctxG ctx n expected
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx path n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx path n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TForall _ body ->
@@ -429,19 +484,20 @@ unifyType nameTy ctxG ctx expected actual =
             (unvar (\() -> n') nameTy)
             ctxG
             (unvar (\() -> Just k) ctx)
+            (Path.snoc path Path.TForallBody)
             (Bound.fromScope body)
             (Bound.fromScope body')
-        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
-        TMeta n -> inversion0 nameTy ctxG ctx n expected
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx path n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx path n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TArr a b ->
       case runSubst actual of
         TArr a' b' -> do
-          unifyType nameTy ctxG ctx a a'
-          unifyType nameTy ctxG ctx b b'
-        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
-        TMeta n -> inversion0 nameTy ctxG ctx n expected
+          unifyType nameTy ctxG ctx (Path.snoc path Path.TArrL) a a'
+          unifyType nameTy ctxG ctx (Path.snoc path Path.TArrR) b b'
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx path n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx path n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TUnsolved ns body ->
@@ -450,7 +506,9 @@ unifyType nameTy ctxG ctx expected actual =
           traverse_
             (\(a, b) ->
                if fst a == fst b
-               then unifyKind (snd a) (snd b)
+               then do
+                 unifyKind (snd a) (snd b)
+                 applySolutions_THoles
                else typeMismatch nameTy expected actual
             )
             (Vector.zip ns ns')
@@ -458,10 +516,11 @@ unifyType nameTy ctxG ctx expected actual =
             (unvar (fst . (ns' Vector.!)) absurd)
             ctxG
             (unvar (Just . snd . (ns' Vector.!)) absurd)
+            (Path.snoc path Path.TUnsolvedBody)
             (Bound.fromScope body)
             (Bound.fromScope body')
-        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx n bs expected
-        TMeta n -> inversion0 nameTy ctxG ctx n expected
+        TSubst (TMeta n) bs -> inversion nameTy ctxG ctx path n bs expected
+        TMeta n -> inversion0 nameTy ctxG ctx path n expected
         THole -> pure ()
         _ -> typeMismatch nameTy expected actual
     TSubst{} -> undefined
@@ -481,7 +540,7 @@ check ::
   m ()
 check name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm ty = do
   ty' <- infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm
-  unifyType nameTy tyctxG tyctx ty ty'
+  unifyType nameTy tyctxG tyctx (Path.snoc path Path.AnnR) ty ty'
   applySolutions_Holes
 
 infer ::
@@ -499,6 +558,8 @@ infer ::
   m (Type ty')
 infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
   case tm of
+    Ann a t ->
+      t <$ check name nameTy ctxG ctx tyctxG tyctx boundTyVars (Path.snoc path Path.AnnL) a t
     Hole -> do
       t <- freshTMeta boundTyVars KType
       addHole path nameTy (t :: Type ty')
@@ -556,7 +617,13 @@ infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
           f
       inTy <- freshTMeta boundTyVars KType
       outTy <- freshTMeta boundTyVars KType
-      unifyType nameTy tyctxG tyctx (TArr inTy outTy) fTy
+      unifyType
+        nameTy
+        tyctxG
+        tyctx
+        (Path.snoc fPath Path.AnnR)
+        (TArr inTy outTy)
+        fTy
       inTy' <- applySolutions inTy
       check
         name

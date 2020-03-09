@@ -137,6 +137,7 @@ data Term ty a
   | Var a
   | Name Name
   | App (Term ty a) (Term ty a)
+  | Ann (Term ty a) (Type ty)
   | Lam Name (Scope () (Term ty) a)
   | LamAnn Name (Type ty) (Scope () (Term ty) a)
   deriving (Functor, Foldable, Traversable)
@@ -155,6 +156,8 @@ instance Bitraversable Term where
       Name a -> pure $ Name a
       App a b ->
         App <$> bitraverse f g a <*> bitraverse f g b
+      Ann a b ->
+        Ann <$> bitraverse f g a <*> traverse f b
       Lam n body ->
         Lam n <$> bitraverseScope f g body
       LamAnn n ty body ->

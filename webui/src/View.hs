@@ -359,6 +359,7 @@ viewTerm nameTy name path dmSelection tm = do
               case a of
                 Syntax.Lam{} -> True
                 Syntax.LamAnn{} -> True
+                Syntax.Ann{} -> True
                 _ -> False
           aInfo <-
             (if parensa then text "(" else pure ()) *>
@@ -383,6 +384,7 @@ viewTerm nameTy name path dmSelection tm = do
                 Syntax.Lam{} -> True
                 Syntax.LamAnn{} -> True
                 Syntax.App{} -> True
+                Syntax.Ann{} -> True
                 _ -> False
           bInfo <-
             (if parensb then text "(" else pure ()) *>
@@ -394,6 +396,58 @@ viewTerm nameTy name path dmSelection tm = do
                  (>>=
                   \(Selection f) -> case viewl f of
                     AppR :< rest -> Just (Selection rest)
+                    _ -> Nothing
+                 )
+                 dmSelection
+              )
+              b <*
+            (if parensb then text ")" else pure ())
+
+          dH <- holdUniqDyn $ (||) <$> _nodeHovered aInfo <*> _nodeHovered bInfo
+          pure $
+            NodeInfo
+            { _nodeHovered = dH
+            , _nodeFocus = leftmost [_nodeFocus aInfo, _nodeFocus bInfo]
+            }
+        Syntax.Ann a b -> do
+          let
+            parensa =
+              case a of
+                Syntax.Lam{} -> True
+                Syntax.Ann{} -> True
+                _ -> False
+          aInfo <-
+            (if parensa then text "(" else pure ()) *>
+            viewTerm
+              nameTy
+              name
+              (snoc path AnnL)
+              (
+               (>>=
+               \(Selection f) -> case viewl f of
+                 AnnL :< rest -> Just (Selection rest)
+                 _ -> Nothing
+               ) <$>
+               dmSelection
+              )
+              a <*
+            (if parensa then text ")" else pure ())
+
+          text ":"
+
+          let
+            parensb =
+              case b of
+                _ -> False
+          bInfo <-
+            (if parensb then text "(" else pure ()) *>
+            viewType
+              nameTy
+              (snoc path AnnR)
+              (fmap
+                 (>>=
+                  \(Selection f) -> case viewl f of
+                    AnnR :< rest -> Just (Selection rest)
                     _ -> Nothing
                  )
                  dmSelection
@@ -532,12 +586,20 @@ viewHoles ::
 viewHoles nameTy holes =
   case holes of
     Nil -> el "div" $ text "no holes"
-    Cons p ns ty Nil ->
+    ConsHole p ns ty Nil ->
       line p ns ty
-    Cons p ns ty rest -> do
+    ConsHole p ns ty rest -> do
       line p ns ty
+      viewHoles nameTy rest
+    ConsTHole p k Nil ->
+      tline p k
+    ConsTHole p k rest -> do
+      tline p k
       viewHoles nameTy rest
   where
     line p ns ty =
       el "div" . text $
       Text.pack (show p) <> ": " <> Syntax.printType ns ty
+    tline p k =
+      el "div" . text $
+      Text.pack (show p) <> ": " <> Syntax.printKind k

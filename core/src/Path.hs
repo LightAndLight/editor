@@ -1,5 +1,6 @@
 {-# language FlexibleInstances, StandaloneDeriving #-}
 {-# language GADTs #-}
+{-# language EmptyCase, LambdaCase #-}
 {-# language RankNTypes #-}
 {-# language TypeOperators #-}
 module Path where
@@ -10,6 +11,8 @@ import Data.Functor.Const (Const(..))
 import Data.Functor.Identity (Identity(..))
 import Data.Monoid (First(..))
 import Data.Type.Equality ((:~:)(..))
+import qualified Data.Vector as Vector
+import Data.Void (Void)
 
 import Syntax (Name, Term, Type)
 import qualified Syntax
@@ -17,27 +20,32 @@ import qualified Syntax
 data P a b where
   AppL :: P (Term ty a) (Term ty a)
   AppR :: P (Term ty a) (Term ty a)
-  Var :: P (Term ty a) a
   LamArg :: P (Term ty a) Name
   LamBody :: P (Term ty a) (Term ty (Var () a))
   LamAnnArg :: P (Term ty a) Name
   LamAnnType :: P (Term ty a) (Type ty)
   LamAnnBody :: P (Term ty a) (Term ty (Var () a))
 
-  TVar :: P (Type a) a
+  AnnL :: P (Term ty tm) (Term ty tm)
+  AnnR :: P (Term ty tm) (Type ty)
+
   TForallArg :: P (Type a) Name
   TForallBody :: P (Type a) (Type (Var () a))
   TArrL :: P (Type a) (Type a)
   TArrR :: P (Type a) (Type a)
+  TUnsolvedBody :: P (Type a) (Type (Var Int Void))
+  TSubstL :: P (Type a) (Type a)
+  TSubstR :: Int -> P (Type a) (Type a)
 deriving instance Show (P a b)
+
+nameLeaf :: P Name a -> Void
+nameLeaf = \case
 
 eqP :: P a b -> P a d -> Maybe (b :~: d)
 eqP AppL AppL = Just Refl
 eqP AppR AppR = Just Refl
-eqP Var Var = Just Refl
 eqP LamArg LamArg = Just Refl
 eqP LamBody LamBody = Just Refl
-eqP TVar TVar = Just Refl
 eqP TForallArg TForallArg = Just Refl
 eqP TForallBody TForallBody = Just Refl
 eqP TArrL TArrL = Just Refl
@@ -57,10 +65,15 @@ matchP p a =
         Syntax.App x y ->
           Just (y, \y' -> Syntax.App x y')
         _ -> Nothing
-    Var ->
+    AnnL ->
       case a of
-        Syntax.Var x ->
-          Just (x, Syntax.Var)
+        Syntax.Ann x y ->
+          Just (x, \x' -> Syntax.Ann x' y)
+        _ -> Nothing
+    AnnR ->
+      case a of
+        Syntax.Ann x y ->
+          Just (y, \y' -> Syntax.Ann x y')
         _ -> Nothing
     LamArg ->
       case a of
@@ -87,11 +100,6 @@ matchP p a =
         Syntax.LamAnn n ty x ->
           Just (Bound.fromScope x, Syntax.LamAnn n ty . Bound.toScope)
         _ -> Nothing
-    TVar ->
-      case a of
-        Syntax.TVar x ->
-          Just (x, Syntax.TVar)
-        _ -> Nothing
     TArrL ->
       case a of
         Syntax.TArr x y ->
@@ -111,6 +119,21 @@ matchP p a =
       case a of
         Syntax.TForall n x ->
           Just (Bound.fromScope x, Syntax.TForall n . Bound.toScope)
+        _ -> Nothing
+    TUnsolvedBody ->
+      case a of
+        Syntax.TUnsolved ns x ->
+          Just (Bound.fromScope x, Syntax.TUnsolved ns . Bound.toScope)
+        _ -> Nothing
+    TSubstL ->
+      case a of
+        Syntax.TSubst x y ->
+          Just (x, \x' -> Syntax.TSubst x' y)
+        _ -> Nothing
+    TSubstR n ->
+      case a of
+        Syntax.TSubst x y ->
+          Just (y Vector.! n, \e' -> Syntax.TSubst x (y Vector.// [(n, e')]))
         _ -> Nothing
 
 data Digit f a b where
