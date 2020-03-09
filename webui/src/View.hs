@@ -591,15 +591,15 @@ viewHoles nameTy holes =
     ConsHole p ns ty rest -> do
       line p ns ty
       viewHoles nameTy rest
-    ConsTHole p k Nil ->
-      tline p k
-    ConsTHole p k rest -> do
-      tline p k
+    ConsTHole p1 p2 k Nil ->
+      tline p1 p2 k
+    ConsTHole p1 p2 k rest -> do
+      tline p1 p2 k
       viewHoles nameTy rest
   where
     line p ns ty =
       el "div" . text $
       Text.pack (show p) <> ": " <> Syntax.printType ns ty
-    tline p k =
+    tline p1 p2 k =
       el "div" . text $
-      Text.pack (show p) <> ": " <> Syntax.printKind k
+      Text.pack (show p1) <> ", " <> Text.pack (show p2) <> ": " <> Syntax.printKind k
