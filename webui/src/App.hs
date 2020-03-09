@@ -12,7 +12,7 @@ import qualified Debug.Trace as Debug
 
 import Control.Monad (guard, when)
 import Control.Monad.Fix (MonadFix)
-import Control.Monad.State (evalStateT)
+import Control.Monad.State (runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Functor (void)
 import Data.Set (Set)
@@ -461,15 +461,8 @@ app = do
     (dMenuOpen, eMenuAction) <-
       menu eOpenMenu eCloseMenu eTab eEnter dSelection
     let
-      dType ::
-        Dynamic
-          t
-          (Either
-             Typecheck.TypeError
-             (Syntax.Type Name, Typecheck.Holes Name Name)
-          )
-      dType =
-        flip evalStateT Typecheck.emptyTCState .
+      dTcRes =
+        flip runStateT Typecheck.emptyTCState .
         Typecheck.infer
           id
           id
@@ -484,9 +477,9 @@ app = do
       (\case
          Left err ->
            el "div" . text . Text.pack $ show err
-         Right (ty, hs) -> do
+         Right (ty, st) -> do
            el "div" . text $ Syntax.printType id ty
-           el "div" $ View.viewHoles id hs
+           el "div" . View.viewHoles id $ Typecheck._tcHoles st
       ) <$>
-      dType
+      dTcRes
   pure ()
