@@ -152,7 +152,7 @@ data MenuAction a where
   InsertApp :: Path a (Term ty tm) -> MenuAction a
   InsertVar :: Path a Name -> Name -> MenuAction a
   InsertTArr :: Path a (Type ty) -> MenuAction a
-  AnnotateVar :: Path a Name -> MenuAction a
+  Annotate :: HasTargetInfo b => Path a b -> MenuAction a
 
   DeleteTerm :: Path a (Term ty tm) -> MenuAction a
   DeleteType :: Path a (Type ty) -> MenuAction a
@@ -170,7 +170,7 @@ renderMenuAction selected action =
     InsertLamAnn{} -> item "\\(x : _) -> _"
     InsertApp{} -> item "_ _"
     InsertVar _ n -> item $ unName n
-    AnnotateVar{} -> item "□ : _"
+    Annotate{} -> item "□ : _"
     InsertTArr{} -> item "_ -> _"
     DeleteTerm{} -> item "_"
     DeleteType{} -> item "_"
@@ -210,7 +210,8 @@ menuItems eNextItem dInputText path = do
         TargetTerm ->
           pure $
           constDyn
-          [ InsertApp path
+          [ Annotate path
+          , InsertApp path
           , InsertLam path
           , InsertLamAnn path
           ]
@@ -223,7 +224,7 @@ menuItems eNextItem dInputText path = do
           pure $
             (\n ->
                [ InsertVar path $ N n
-               , AnnotateVar path
+               , Annotate path
                ]
             ) <$>
             dInputText
@@ -325,40 +326,47 @@ runAction action (Focus.Selection oldPath, old) =
       case Edit.edit path targetInfo (Edit.ModifyName $ const n) old of
         Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
         Right (newPath, _, new) -> (Focus.Selection newPath, new)
-    AnnotateVar path ->
-      case Path.viewr path of
-        EmptyR -> (Focus.Selection oldPath, old)
-        ps :> p ->
-          case p of
-            Path.TForallArg -> error "todo: annotate tvar"
-            Path.LamAnnArg->
-              case Zipper.downTo ps $ Zipper.toZipper old of
-                Nothing -> (Focus.Selection oldPath, old)
-                Just z ->
-                  case Zipper._focus z of
-                    Syntax.LamAnn n _ body ->
-                      let
-                        new =
-                          Zipper.fromZipper $
-                          z { Zipper._focus = Syntax.LamAnn n THole body }
-                        newPath = Path.snoc ps Path.LamAnnType
-                      in
-                        (Focus.Selection newPath, new)
-                    _ -> undefined
-            Path.LamArg ->
-              case Zipper.downTo ps $ Zipper.toZipper old of
-                Nothing -> (Focus.Selection oldPath, old)
-                Just z ->
-                  case Zipper._focus z of
-                    Syntax.Lam n body ->
-                      let
-                        new =
-                          Zipper.fromZipper $
-                          z { Zipper._focus = Syntax.LamAnn n THole body }
-                        newPath = Path.snoc ps Path.LamAnnType
-                      in
-                        (Focus.Selection newPath, new)
-                    _ -> undefined
+    Annotate (path :: Path a x) ->
+      case targetInfo @x of
+        TargetType -> error "todo: annotate type"
+        TargetTerm ->
+          case Edit.edit path targetInfo (Edit.ModifyTerm (`Syntax.Ann` Syntax.THole) $ Path.singleton Path.AnnR) old of
+            Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+            Right (newPath, _, new) -> (Focus.Selection newPath, new)
+        TargetName ->
+          case Path.viewr path of
+            EmptyR -> (Focus.Selection oldPath, old)
+            ps :> p ->
+              case p of
+                Path.TForallArg -> error "todo: annotate tvar"
+                Path.LamAnnArg->
+                  case Zipper.downTo ps $ Zipper.toZipper old of
+                    Nothing -> (Focus.Selection oldPath, old)
+                    Just z ->
+                      case Zipper._focus z of
+                        Syntax.LamAnn n _ body ->
+                          let
+                            new =
+                              Zipper.fromZipper $
+                              z { Zipper._focus = Syntax.LamAnn n THole body }
+                            newPath = Path.snoc ps Path.LamAnnType
+                          in
+                            (Focus.Selection newPath, new)
+                        _ -> undefined
+                Path.LamArg ->
+                  case Zipper.downTo ps $ Zipper.toZipper old of
+                    Nothing -> (Focus.Selection oldPath, old)
+                    Just z ->
+                      case Zipper._focus z of
+                        Syntax.Lam n body ->
+                          let
+                            new =
+                              Zipper.fromZipper $
+                              z { Zipper._focus = Syntax.LamAnn n THole body }
+                            newPath = Path.snoc ps Path.LamAnnType
+                          in
+                            (Focus.Selection newPath, new)
+                        _ -> undefined
     InsertTArr path ->
       case Edit.edit path targetInfo (Edit.InsertType (Syntax.TArr Syntax.THole Syntax.THole) (Path.singleton Path.TArrL)) old of
         Left err -> Debug.traceShow err (Focus.Selection oldPath, old)

@@ -652,7 +652,18 @@ infer ::
   m (Type ty')
 infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
   case tm of
-    Ann a t ->
+    Ann a t -> do
+      checkKind
+        (KCEnv
+          { _keName = nameTy
+          , _keGlobalCtx = tyctxG
+          , _keCtx = tyctx
+          , _keTmPath = path
+          , _keTyPath = Path.empty
+          }
+        )
+        t
+        KType
       t <$ check name nameTy ctxG ctx tyctxG tyctx boundTyVars (Path.snoc path Path.AnnL) a t
     Hole -> do
       t <- freshTMeta boundTyVars KType
