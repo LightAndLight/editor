@@ -91,7 +91,8 @@ data MenuAction a where
   InsertLam :: Path a (Term ty tm) -> MenuAction a
   InsertLamAnn :: Path a (Term ty tm) -> MenuAction a
   InsertApp :: Path a (Term ty tm) -> MenuAction a
-  InsertVar :: Path a Name -> Name -> MenuAction a
+  InsertVar :: Path a (Term ty tm) -> Name -> MenuAction a
+  InsertName :: Path a Name -> Name -> MenuAction a
   InsertTArr :: Path a (Type ty) -> MenuAction a
   Annotate :: HasTargetInfo b => Path a b -> MenuAction a
 
@@ -110,7 +111,8 @@ renderMenuAction selected action =
     InsertLam{} -> item "\\x -> _"
     InsertLamAnn{} -> item "\\(x : _) -> _"
     InsertApp{} -> item "_ _"
-    InsertVar _ n -> item $ unName n
+    InsertVar{} -> item "variable"
+    InsertName _ n -> item $ unName n
     Annotate{} -> item "□ : _"
     InsertTArr{} -> item "_ -> _"
     DeleteTerm{} -> item "_"
@@ -150,12 +152,15 @@ menuItems eNextItem dInputText path = do
       case targetInfo @b of
         TargetTerm ->
           pure $
-          constDyn
-          [ Annotate path
-          , InsertApp path
-          , InsertLam path
-          , InsertLamAnn path
-          ]
+            (\n ->
+             [ Annotate path
+             , InsertApp path
+             , InsertLam path
+             , InsertLamAnn path
+             , InsertVar path $ N n
+             ]
+            ) <$>
+            dInputText
         TargetType ->
           pure $
           constDyn
@@ -164,7 +169,7 @@ menuItems eNextItem dInputText path = do
         TargetName ->
           pure $
             (\n ->
-               [ InsertVar path $ N n
+               [ InsertName path $ N n
                , Annotate path
                ]
             ) <$>
@@ -248,7 +253,11 @@ menu eOpen eClose eNextItem eEnter dSelection = do
   dOpen <- holdDyn False $ leftmost [True <$ eOpen, False <$ eClose]
   pure (dOpen, eAction)
 
-runAction :: MenuAction a -> (Focus.Selection a, a) -> (Focus.Selection a, a)
+runAction ::
+  HasTargetInfo a =>
+  MenuAction a ->
+  (Focus.Selection a, a) ->
+  (Focus.Selection a, a)
 runAction action (Focus.Selection oldPath, old) =
   case action of
     InsertLam path ->
@@ -263,10 +272,17 @@ runAction action (Focus.Selection oldPath, old) =
       case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
         Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
         Right (newPath, _, new) -> (Focus.Selection newPath, new)
-    InsertVar path n ->
+    InsertName path n ->
       case Edit.edit path targetInfo (Edit.ModifyName $ const n) old of
         Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
         Right (newPath, _, new) -> (Focus.Selection newPath, new)
+    InsertVar path n ->
+      case Edit.edit path targetInfo (Edit.InsertVar n) old of
+        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+        Right (newPath, _, new) ->
+          case Focus.nextHole newPath new of
+            Nothing -> (Focus.Selection newPath, new)
+            Just newPath' -> (newPath', new)
     Annotate (path :: Path a x) ->
       case targetInfo @x of
         TargetType -> error "todo: annotate type"
@@ -404,7 +420,7 @@ app = do
          Left err ->
            el "div" . text . Text.pack $ show err
          Right (ty, st) -> do
-           el "div" . text $ Syntax.printType id ty
+           el "div" . text . ("inferred type: " <>) $ Syntax.printType id ty
            el "div" . View.viewHoles id $ Typecheck._tcHoles st
       ) <$>
       dTcRes

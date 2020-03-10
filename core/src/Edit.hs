@@ -4,6 +4,8 @@
 {-# language ScopedTypeVariables, TypeApplications #-}
 module Edit where
 
+import qualified Bound
+
 import Syntax (Name, Term, Type)
 import qualified Syntax
 import Path (Path, TargetInfo(..), HasTargetInfo, targetInfo)
@@ -11,6 +13,7 @@ import qualified Path
 
 data Action a b where
   InsertTerm :: Term ty a -> Path (Term ty a) b -> Action (Term ty a) b
+  InsertVar :: Name -> Action (Term ty tm) (Term ty tm)
   ModifyTerm ::
     (Term ty a -> Term ty a) ->
     Path (Term ty a) b ->
@@ -28,7 +31,7 @@ instance Show EditError where
 
 edit ::
   forall src tgt tgt'.
-  HasTargetInfo tgt' =>
+  (HasTargetInfo src, HasTargetInfo tgt') =>
   Path src tgt ->
   TargetInfo tgt ->
   Action tgt tgt' ->
@@ -42,6 +45,13 @@ edit path TargetTerm action a =
       case Path.set path tm a of
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
+    InsertVar n ->
+      case targetInfo @src of
+        TargetTerm ->
+          case insertVar path n a of
+            Nothing -> Left $ InvalidPath path a
+            Just a' -> Right (path, TargetTerm, a')
+        _ -> Left $ InvalidPath path a
     ModifyTerm f suffix ->
       case Path.modify path f a of
         Nothing -> Left $ InvalidPath path a
@@ -68,3 +78,63 @@ edit path TargetType action a =
       case Path.set path Syntax.THole a of
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (path, TargetType, a')
+
+insertVar ::
+  Path (Term ty tm) (Term ty' tm') ->
+  Name ->
+  Term ty tm ->
+  Maybe (Term ty tm)
+insertVar = go Syntax.Name
+  where
+    go ::
+      (Name -> Term ty tm) ->
+      Path (Term ty tm) (Term ty' tm') ->
+      Name ->
+      Term ty tm ->
+      Maybe (Term ty tm)
+    go abstract path n tm =
+      case Path.viewl path of
+        Path.EmptyL -> Just $ abstract n
+        p Path.:< ps ->
+          case p of
+            Path.LamBody ->
+              case tm of
+                Syntax.Lam n' body ->
+                  Syntax.Lam n' . Bound.toScope <$>
+                  go
+                    (\x ->
+                       if x == n'
+                       then Syntax.Var (Bound.B ())
+                       else fmap Bound.F $ abstract x
+                    )
+                    ps
+                    n
+                    (Bound.fromScope body)
+                _ -> Nothing
+            Path.LamAnnBody ->
+              case tm of
+                Syntax.LamAnn n' t body ->
+                  Syntax.LamAnn n' t . Bound.toScope <$>
+                  go
+                    (\x ->
+                       if x == n'
+                       then Syntax.Var (Bound.B ())
+                       else fmap Bound.F $ abstract x
+                    )
+                    ps
+                    n
+                    (Bound.fromScope body)
+                _ -> Nothing
+            Path.AppL -> do
+              (tm', mk) <- Path.matchP p tm
+              mk <$> go abstract ps n tm'
+            Path.AppR -> do
+              (tm', mk) <- Path.matchP p tm
+              mk <$> go abstract ps n tm'
+            Path.AnnL -> do
+              (tm', mk) <- Path.matchP p tm
+              mk <$> go abstract ps n tm'
+            Path.LamArg -> Nothing
+            Path.LamAnnArg -> Nothing
+            Path.LamAnnType -> Nothing
+            Path.AnnR -> Nothing
