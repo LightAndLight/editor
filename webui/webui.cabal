@@ -17,6 +17,7 @@ extra-source-files:  CHANGELOG.md
 
 executable webui
   other-modules:       App
+                     , Input
                      , Style
                      , View
   main-is:             Main.hs

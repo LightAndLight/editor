@@ -10,24 +10,21 @@ module App (app) where
 
 import qualified Debug.Trace as Debug
 
-import Control.Monad (guard, when)
+import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.State (runStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Functor (void)
-import Data.Set (Set)
-import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
-import GHCJS.DOM.EventM (on, event, eventTarget, preventDefault)
+import GHCJS.DOM.EventM (on, eventTarget)
+import qualified GHCJS.DOM.GlobalEventHandlers as Events
 import GHCJS.DOM.HTMLElement (HTMLElement)
 import GHCJS.DOM.HTMLInputElement (HTMLInputElement)
 import qualified GHCJS.DOM.HTMLElement as HTMLElement
 import qualified GHCJS.DOM.HTMLInputElement as HTMLInputElement
-import qualified GHCJS.DOM.GlobalEventHandlers as Events
-import qualified GHCJS.DOM.KeyboardEvent as KeyboardEvent
 import JSDOM.Types (liftJSM, toJSVal, fromJSValUnchecked)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex.Dom hiding (Delete, preventDefault)
@@ -36,70 +33,14 @@ import qualified Edit
 import qualified Focus
 import Path (Path, TargetInfo(..), HasTargetInfo, ViewR(..), targetInfo, empty)
 import qualified Path
-import qualified Style
 import Syntax
 import qualified Typecheck
-import View (viewTerm)
-import qualified View
 import qualified Zipper
 
-keysDownUp ::
-  forall t m.
-  ( MonadHold t m, DomBuilder t m, MonadFix m
-  , HasDocument m, MonadJSM m, TriggerEvent t m
-  , DomBuilderSpace m ~ GhcjsDomSpace
-  ) =>
-  m (Event t Text, Event t Text)
-keysDownUp = do
-  document <- askDocument
-  let ctrl :: [Text] = ["Tab", "Enter"]
-  eKeyDown :: Event t Text <-
-    wrapDomEvent document (`on` Events.keyDown) $ do
-      ev <- event
-      code <- lift (KeyboardEvent.getCode ev)
-      when (code `elem` ctrl) preventDefault
-      pure code
-  eKeyUp :: Event t Text <-
-    wrapDomEvent document (`on` Events.keyUp) $ do
-      ev <- event
-      code <- lift (KeyboardEvent.getCode ev)
-      when (code `elem` ctrl) preventDefault
-      pure code
-  pure (eKeyDown, eKeyUp)
-
-keysHeld ::
-  forall t m.
-  ( MonadHold t m, DomBuilder t m, MonadFix m
-  , HasDocument m, MonadJSM m, TriggerEvent t m
-  , DomBuilderSpace m ~ GhcjsDomSpace
-  ) =>
-  Event t Text ->
-  Event t Text ->
-  m (Dynamic t (Set Text))
-keysHeld eKeyDown eKeyUp = do
-  rec
-    dHeldKeys <-
-      holdDyn Set.empty $
-      leftmost
-      [ flip Set.insert <$> current dHeldKeys <@> eKeyDown
-      , flip Set.delete <$> current dHeldKeys <@> eKeyUp
-      ]
-  pure dHeldKeys
-
-keyPressed ::
-  Reflex t =>
-  Event t Text ->
-  Dynamic t (Set Text) ->
-  Event t Text
-keyPressed eKeyDown dKeysHeld =
-  attachWithMaybe
-    (\ks k ->
-        if Set.member k ks
-        then Nothing
-        else Just k
-    )
-    (current dKeysHeld)
-    eKeyDown
+import Input (Inputs(..), getInputs)
+import qualified Style
+import View (viewTerm)
+import qualified View
 
 menuInput ::
   ( MonadHold t m, DomBuilder t m
@@ -390,28 +331,7 @@ app ::
   ) =>
   m ()
 app = do
-  (eKeyDown, eKeyUp) <- keysDownUp
-  dKeysHeld <- keysHeld eKeyDown eKeyUp
-  let
-    dShiftMod =
-      (\ks -> "ShiftLeft" `Set.member` ks || "ShiftRight" `Set.member` ks) <$>
-      dKeysHeld
-  let eKeyPressed = keyPressed eKeyDown dKeysHeld
-  let
-    eSpace =
-      fmapMaybe (\case; "Space" -> Just (); _ -> Nothing) eKeyPressed
-    eEscape =
-      fmapMaybe (\case; "Escape" -> Just (); _ -> Nothing) eKeyPressed
-    eTab =
-      gate (not <$> current dShiftMod) $
-      fmapMaybe (\case; "Tab" -> Just (); _ -> Nothing) eKeyPressed
-    eShiftTab =
-      gate (current dShiftMod) $
-      fmapMaybe (\case; "Tab" -> Just (); _ -> Nothing) eKeyPressed
-    eEnter =
-      fmapMaybe (\case; "Enter" -> Just (); _ -> Nothing) eKeyPressed
-    eDelete =
-      fmapMaybe (\case; "Delete" -> Just (); _ -> Nothing) eKeyPressed
+  inputs <- getInputs
   rec
     let
       eNextHole =
@@ -420,14 +340,14 @@ app = do
              Nothing -> (Focus.Selection p, a)
              Just p' -> (p', a)
         ) <$
-        gate (not <$> current dMenuOpen) eTab
+        gate (not <$> current dMenuOpen) (_iTab inputs)
       ePrevHole =
         (\(Focus.Selection p, a) ->
            case Focus.prevHole p a of
              Nothing -> (Focus.Selection p, a)
              Just p' -> (p', a)
         ) <$
-        gate (not <$> current dMenuOpen) eShiftTab
+        gate (not <$> current dMenuOpen) (_iShiftTab inputs)
     dPathTerm <-
       foldDyn
         ($)
@@ -460,12 +380,12 @@ app = do
                    TargetName -> Nothing
           )
           ((,) <$> current dMenuOpen <*> current dSelection)
-          eDelete
+          (_iDelete inputs)
     let
-      eOpenMenu = eSpace
-      eCloseMenu = eEscape <> void eSelection <> void eMenuAction
+      eOpenMenu = _iSpace inputs
+      eCloseMenu = _iEscape inputs <> void eSelection <> void eMenuAction
     (dMenuOpen, eMenuAction) <-
-      menu eOpenMenu eCloseMenu eTab eEnter dSelection
+      menu eOpenMenu eCloseMenu (_iTab inputs) (_iEnter inputs) dSelection
     let
       dTcRes =
         flip runStateT Typecheck.emptyTCState .
