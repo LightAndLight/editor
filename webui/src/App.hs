@@ -49,11 +49,17 @@ menuInput ::
   , PerformEvent t m, MonadJSM (Performable m)
   , MonadJSM m
   ) =>
+  Dynamic t Bool ->
   m (Dynamic t Text)
-menuInput = do
+menuInput dInputValid = do
   (theInput, _) <-
-    elAttr' "input"
-      ("type" =: "text" <> "class" =: "input" <> "id" =: "blaaah")
+    elDynAttr' "input"
+      ((\valid ->
+          "type" =: "text" <>
+          "class" =: ("input" <> if valid then "" else " is-danger")
+       ) <$>
+       dInputValid
+      )
       (pure ())
   ePostBuild <- delay 0.05 =<< getPostBuild
   performEvent_ $
@@ -216,17 +222,29 @@ menuForTarget ::
 menuForTarget eNextItem eEnter path =
   elAttr "div" ("style" =: "position: absolute" <> "class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
-    dInputText <- elAttr "div" ("class" =: "dropdown-item") menuInput
-    (dSelection, dItems) <- menuItems eNextItem dInputText path
+    rec
+      dInputText <- elAttr "div" ("class" =: "dropdown-item") $ menuInput dInputValid
+      let
+        dInputValid =
+          (\sel txt ->
+             case sel of
+               InsertVar{} -> not $ Text.null txt
+               _ -> True
+          ) <$>
+          dAction <*>
+          dInputText
+      (dSelection, dItems) <- menuItems eNextItem dInputText path
+      let dAction = (Vector.!) <$> dItems <*> dSelection
     eItemClicked :: Event t Int <-
       fmap switchDyn $
       bindDynamicM
         (uncurry renderMenuActions)
         ((,) <$> dSelection <*> dItems)
-    pure $
+    pure .
+      gate (current dInputValid) $
       leftmost
       [ (Vector.!) <$> current dItems <@> eItemClicked
-      , (Vector.!) <$> current dItems <*> current dSelection <@ eEnter
+      , current dAction <@ eEnter
       ]
 
 menu ::
