@@ -42,15 +42,70 @@ nameLeaf :: P Name a -> Void
 nameLeaf = \case
 
 eqP :: P a b -> P a d -> Maybe (b :~: d)
-eqP AppL AppL = Just Refl
-eqP AppR AppR = Just Refl
-eqP LamArg LamArg = Just Refl
-eqP LamBody LamBody = Just Refl
-eqP TForallArg TForallArg = Just Refl
-eqP TForallBody TForallBody = Just Refl
-eqP TArrL TArrL = Just Refl
-eqP TArrR TArrR = Just Refl
-eqP _ _ = Nothing
+eqP AppL a =
+  case a of
+    AppL -> Just Refl
+    _ -> Nothing
+eqP AppR a =
+  case a of
+    AppR -> Just Refl
+    _ -> Nothing
+eqP AnnL a =
+  case a of
+    AnnL -> Just Refl
+    _ -> Nothing
+eqP AnnR a =
+  case a of
+    AnnR -> Just Refl
+    _ -> Nothing
+eqP LamArg a =
+  case a of
+    LamArg -> Just Refl
+    _ -> Nothing
+eqP LamBody a =
+  case a of
+    LamBody -> Just Refl
+    _ -> Nothing
+eqP LamAnnArg a =
+  case a of
+    LamAnnArg -> Just Refl
+    _ -> Nothing
+eqP LamAnnType a =
+  case a of
+    LamAnnType -> Just Refl
+    _ -> Nothing
+eqP LamAnnBody a =
+  case a of
+    LamAnnBody -> Just Refl
+    _ -> Nothing
+eqP TForallArg a =
+  case a of
+    TForallArg -> Just Refl
+    _ -> Nothing
+eqP TForallBody a =
+  case a of
+    TForallBody -> Just Refl
+    _ -> Nothing
+eqP TArrL a =
+  case a of
+    TArrL -> Just Refl
+    _ -> Nothing
+eqP TArrR a =
+  case a of
+    TArrR -> Just Refl
+    _ -> Nothing
+eqP TUnsolvedBody a =
+  case a of
+    TUnsolvedBody -> Just Refl
+    _ -> Nothing
+eqP TSubstL a =
+  case a of
+    TSubstL -> Just Refl
+    _ -> Nothing
+eqP (TSubstR n) a =
+  case a of
+    TSubstR n' | n == n' -> Just Refl
+    _ -> Nothing
 
 matchP :: P a b -> a -> Maybe (b, b -> a)
 matchP p a =

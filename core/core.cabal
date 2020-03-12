@@ -20,6 +20,7 @@ library
                      , Edit
                      , Focus
                      , Path
+                     , Path.Map
                      , Syntax
                      , Typecheck
                      , Zipper

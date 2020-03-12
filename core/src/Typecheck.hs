@@ -22,6 +22,7 @@ import Data.Void (Void, absurd)
 
 import Path (Path)
 import qualified Path
+import qualified Path.Map
 import Syntax
 
 data Entry
@@ -74,6 +75,41 @@ substKMetas_Holes s hs =
     ConsTHole p1 p2 k rest ->
       ConsTHole p1 p2 (substKMetas s k) $ substKMetas_Holes s rest
 
+data Info a where
+  TermInfo :: (ty -> Name) -> Type ty -> Info (Term ty tm)
+  TypeInfo :: Kind -> Info (Type ty)
+
+data TCState ty tm
+  = TCState
+  { _tcTypeSupply :: Int
+  , _tcKindSupply :: Int
+  , _tcEntries :: Seq Entry
+  , _tcSubst :: Map TMeta (Type Void)
+  , _tcKindSubst :: Map KMeta Kind
+  , _tcHoles :: Holes ty tm
+  , _tcInfo :: Path.Map.Map (Term ty tm) Info
+  }
+
+emptyTCState :: TCState ty tm
+emptyTCState =
+  TCState
+  { _tcTypeSupply = 0
+  , _tcKindSupply = 0
+  , _tcEntries = mempty
+  , _tcSubst = mempty
+  , _tcKindSubst = mempty
+  , _tcHoles = Nil
+  , _tcInfo = Path.Map.empty
+  }
+
+addInfo ::
+  MonadState (TCState ty tm) m =>
+  Path (Term ty tm) b ->
+  Info b ->
+  m ()
+addInfo p i =
+  modify $ \tc -> tc { _tcInfo = Path.Map.insert p i $ _tcInfo tc }
+
 applySolutions_Holes ::
   MonadState (TCState ty tm) m =>
   m ()
@@ -111,27 +147,6 @@ appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
 appendHoles Nil hs = hs
 appendHoles (ConsHole p ns ty rest) hs = ConsHole p ns ty $ appendHoles rest hs
 appendHoles (ConsTHole p1 p2 k rest) hs = ConsTHole p1 p2 k $ appendHoles rest hs
-
-data TCState ty tm
-  = TCState
-  { _tcTypeSupply :: Int
-  , _tcKindSupply :: Int
-  , _tcEntries :: Seq Entry
-  , _tcSubst :: Map TMeta (Type Void)
-  , _tcKindSubst :: Map KMeta Kind
-  , _tcHoles :: Holes ty tm
-  }
-
-emptyTCState :: TCState ty tm
-emptyTCState =
-  TCState
-  { _tcTypeSupply = 0
-  , _tcKindSupply = 0
-  , _tcEntries = mempty
-  , _tcSubst = mempty
-  , _tcKindSubst = mempty
-  , _tcHoles = Nil
-  }
 
 data TypeError
   = NotInScope Name
@@ -650,7 +665,25 @@ infer ::
   Path (Term ty tm) (Term ty' tm') ->
   Term ty' tm' ->
   m (Type ty')
-infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
+infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm = do
+  ty <- infer' name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm
+  addInfo path $ TermInfo nameTy ty
+  pure ty
+
+infer' ::
+  forall ty tm ty' tm' m.
+  (Eq ty', MonadState (TCState ty tm) m, MonadError TypeError m) =>
+  (tm' -> Name) ->
+  (ty' -> Name) ->
+  (Name -> Maybe (Type ty')) ->
+  (tm' -> Maybe (Type ty')) ->
+  (Name -> Maybe Kind) ->
+  (ty' -> Maybe Kind) ->
+  Seq (Name, Type ty', Kind) ->
+  Path (Term ty tm) (Term ty' tm') ->
+  Term ty' tm' ->
+  m (Type ty')
+infer' name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
   case tm of
     Ann a t -> do
       checkKind
@@ -678,6 +711,19 @@ infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
         Nothing -> throwError $ NotInScope a
         Just ty -> pure ty
     LamAnn n ty body -> do
+      let tyPath = Path.snoc path Path.LamAnnType
+      checkKind
+        (KCEnv
+          { _keName = nameTy
+          , _keGlobalCtx = tyctxG
+          , _keCtx = tyctx
+          , _keTmPath = path
+          , _keTyPath = Path.empty
+          }
+        )
+        ty
+        KType
+      addInfo tyPath $ TypeInfo KType
       let bodyPath = Path.snoc path Path.LamAnnBody
       bodyTy <-
         infer

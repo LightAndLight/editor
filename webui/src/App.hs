@@ -33,6 +33,7 @@ import qualified Edit
 import qualified Focus
 import Path (Path, TargetInfo(..), HasTargetInfo, ViewR(..), targetInfo, empty)
 import qualified Path
+import qualified Path.Map
 import Syntax
 import qualified Typecheck
 import qualified Zipper
@@ -460,18 +461,36 @@ app =
 
       dSelectionInfo :: Dynamic t (m ())
       dSelectionInfo =
-        (\(Focus.Selection (_ :: Path (Term Name Name) y)) tcRes ->
+        (\(Focus.Selection (path :: Path (Term Name Name) y)) tcRes ->
            case targetInfo @y of
-             TargetTerm ->
+             TargetTerm -> do
+               infoItem "Form" "expr"
                case tcRes of
                  Left err ->
                    text . Text.pack $ show err
-                 Right (ty, st) -> do
-                   infoItem "Form" "expr"
-                   infoItem "Type" (Syntax.printType id ty)
-                   View.viewHoles id $ Typecheck._tcHoles st
+                 Right (_, st) -> do
+                   let
+                     ty =
+                       case Path.Map.lookup path (Typecheck._tcInfo st) of
+                         Nothing -> Text.pack $ "not found at: " <> show path
+                         Just (Typecheck.TermInfo name t) ->
+                           Syntax.printType name $
+                           Syntax.substTMetas (Typecheck._tcSubst st) t
+                   infoItem "Type" ty
              TargetType -> do
                infoItem "Form" "type"
+               case tcRes of
+                 Left err ->
+                   text . Text.pack $ show err
+                 Right (_, st) -> do
+                   let
+                     ki =
+                       case Path.Map.lookup path (Typecheck._tcInfo st) of
+                         Nothing -> Text.pack $ "not found at: " <> show path
+                         Just (Typecheck.TypeInfo k) ->
+                           Syntax.printKind $
+                           Syntax.substKMetas (Typecheck._tcKindSubst st) k
+                   infoItem "Kind" ki
              TargetName -> do
                infoItem "Form" "name"
         ) <$>
