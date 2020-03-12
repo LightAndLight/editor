@@ -414,6 +414,7 @@ viewTerm nameTy name path dmSelection tm = do
             parensa =
               case a of
                 Syntax.Lam{} -> True
+                Syntax.LamAnn{} -> True
                 Syntax.Ann{} -> True
                 _ -> False
           aInfo <-

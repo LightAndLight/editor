@@ -220,7 +220,7 @@ menuForTarget ::
   Path a b ->
   m (Event t (MenuAction a))
 menuForTarget eNextItem eEnter path =
-  elAttr "div" ("style" =: "position: absolute" <> "class" =: "dropdown is-active") $
+  elAttr "div" ("class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
     rec
       dInputText <- elAttr "div" ("class" =: "dropdown-item") $ menuInput dInputValid
@@ -356,6 +356,25 @@ runAction action (Focus.Selection oldPath, old) =
         Right (newPath, _, new) -> (Focus.Selection newPath, new)
     Other{} -> (Focus.Selection oldPath, old)
 
+infoItem :: DomBuilder t m => Text -> Text -> m ()
+infoItem left right =
+  elAttr "div"
+    ("class" =: "level" <>
+     "style" =:
+     ("border-bottom: 1px solid;" <>
+      "margin-bottom: 0.75em;" <>
+      "padding-bottom: 0.25em"
+     )
+    ) $ do
+    elAttr "div" ("class" =: "level-left") $ do
+      elAttr "div"
+        ("class" =: ("level-item " <> Style.classes [Style.text]))
+        (text left)
+    elAttr "div" ("class" =: "level-right") $ do
+      elAttr "div"
+        ("class" =: ("level-item " <> Style.classes [Style.code]))
+        (text right)
+
 app ::
   forall t m.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
@@ -364,63 +383,68 @@ app ::
   , DomBuilderSpace m ~ GhcjsDomSpace
   ) =>
   m ()
-app = do
-  inputs <- getInputs
-  rec
+app =
+  elAttr "div" ("class" =: "columns" <> "style" =: "height: 100%") $ do
+    inputs <- getInputs
+    (dTerm, dSelection) <-
+      elAttr "div" ("class" =: Style.classes [Style.mainPanel]) $ do
+        rec
+          let
+            eNextHole =
+              (\(Focus.Selection p, a) ->
+                case Focus.nextHole p a of
+                  Nothing -> (Focus.Selection p, a)
+                  Just p' -> (p', a)
+              ) <$
+              gate (not <$> current dMenuOpen) (_iTab inputs)
+            ePrevHole =
+              (\(Focus.Selection p, a) ->
+                case Focus.prevHole p a of
+                  Nothing -> (Focus.Selection p, a)
+                  Just p' -> (p', a)
+              ) <$
+              gate (not <$> current dMenuOpen) (_iShiftTab inputs)
+          dPathTerm <-
+            foldDyn
+              ($)
+              (Focus.Selection Path.empty, Syntax.Hole)
+              (mergeWith (.)
+              [ runAction <$> eMenuAction
+              , runAction <$> eDeleteNode
+              , eNextHole
+              , ePrevHole
+              , (\p (_, a) -> (p, a)) <$> eSelection
+              ]
+              )
+          let dSelection = fst <$> dPathTerm
+          let dTerm = snd <$> dPathTerm
+          eSelection :: Event t (Focus.Selection (Syntax.Term Name Name)) <-
+            fmap switchDyn $
+            bindDynamicM
+              (fmap View._nodeFocus . viewTerm id id empty (Just <$> dSelection))
+              dTerm
+          let
+            eDeleteNode =
+              attachWithMaybe
+                (\(open, sel) _ -> do
+                  guard $ not open
+                  case sel of
+                    Focus.Selection (path :: Path (Syntax.Term Name Name) x) ->
+                      case targetInfo @x of
+                        TargetTerm -> Just $ DeleteTerm path
+                        TargetType -> Just $ DeleteType path
+                        TargetName -> Nothing
+                )
+                ((,) <$> current dMenuOpen <*> current dSelection)
+                (_iDelete inputs)
+          let
+            eOpenMenu = _iSpace inputs
+            eCloseMenu = _iEscape inputs <> void eSelection <> void eMenuAction
+          (dMenuOpen, eMenuAction) <-
+            menu eOpenMenu eCloseMenu (_iTab inputs) (_iEnter inputs) dSelection
+        pure (dTerm, dSelection)
     let
-      eNextHole =
-        (\(Focus.Selection p, a) ->
-           case Focus.nextHole p a of
-             Nothing -> (Focus.Selection p, a)
-             Just p' -> (p', a)
-        ) <$
-        gate (not <$> current dMenuOpen) (_iTab inputs)
-      ePrevHole =
-        (\(Focus.Selection p, a) ->
-           case Focus.prevHole p a of
-             Nothing -> (Focus.Selection p, a)
-             Just p' -> (p', a)
-        ) <$
-        gate (not <$> current dMenuOpen) (_iShiftTab inputs)
-    dPathTerm <-
-      foldDyn
-        ($)
-        (Focus.Selection Path.empty, App (App (Var "f") (Var "x")) Hole)
-        (mergeWith (.)
-         [ runAction <$> eMenuAction
-         , runAction <$> eDeleteNode
-         , eNextHole
-         , ePrevHole
-         , (\p (_, a) -> (p, a)) <$> eSelection
-         ]
-        )
-    let dSelection = fst <$> dPathTerm
-    let dTerm = snd <$> dPathTerm
-    eSelection :: Event t (Focus.Selection (Syntax.Term Name Name)) <-
-      fmap switchDyn $
-      bindDynamicM
-        (fmap View._nodeFocus . viewTerm id id empty (Just <$> dSelection))
-        dTerm
-    let
-      eDeleteNode =
-        attachWithMaybe
-          (\(open, sel) _ -> do
-             guard $ not open
-             case sel of
-               Focus.Selection (path :: Path (Syntax.Term Name Name) x) ->
-                 case targetInfo @x of
-                   TargetTerm -> Just $ DeleteTerm path
-                   TargetType -> Just $ DeleteType path
-                   TargetName -> Nothing
-          )
-          ((,) <$> current dMenuOpen <*> current dSelection)
-          (_iDelete inputs)
-    let
-      eOpenMenu = _iSpace inputs
-      eCloseMenu = _iEscape inputs <> void eSelection <> void eMenuAction
-    (dMenuOpen, eMenuAction) <-
-      menu eOpenMenu eCloseMenu (_iTab inputs) (_iEnter inputs) dSelection
-    let
+      dTcRes :: Dynamic t (Either Typecheck.TypeError (Type Name, Typecheck.TCState Name Name))
       dTcRes =
         flip runStateT Typecheck.emptyTCState .
         Typecheck.infer
@@ -433,13 +457,28 @@ app = do
           mempty
           Path.empty <$>
         dTerm
-    dyn_ $
-      (\case
-         Left err ->
-           el "div" . text . Text.pack $ show err
-         Right (ty, st) -> do
-           el "div" . text . ("inferred type: " <>) $ Syntax.printType id ty
-           el "div" . View.viewHoles id $ Typecheck._tcHoles st
-      ) <$>
-      dTcRes
-  pure ()
+
+      dSelectionInfo :: Dynamic t (m ())
+      dSelectionInfo =
+        (\(Focus.Selection (_ :: Path (Term Name Name) y)) tcRes ->
+           case targetInfo @y of
+             TargetTerm ->
+               case tcRes of
+                 Left err ->
+                   text . Text.pack $ show err
+                 Right (ty, st) -> do
+                   infoItem "Form" "expr"
+                   infoItem "Type" (Syntax.printType id ty)
+                   View.viewHoles id $ Typecheck._tcHoles st
+             TargetType -> do
+               infoItem "Form" "type"
+             TargetName -> do
+               infoItem "Form" "name"
+        ) <$>
+        dSelection <*>
+        dTcRes
+    elAttr "div" ("class" =: Style.classes [Style.rightPanel]) $ do
+      el "header" $ text "Info"
+      elAttr "section" ("class" =: Style.classes [Style.code]) $
+        dyn_ dSelectionInfo
+    pure ()

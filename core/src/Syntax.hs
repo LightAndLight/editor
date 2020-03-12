@@ -225,8 +225,12 @@ printType nameTy ty =
       "). " <>
       printType (unvar (fst . (ctx Vector.!)) absurd) (Bound.fromScope body)
     TSubst a bs ->
-      "subst(" <>
+      "Subst(" <>
       printType nameTy a <>
-      ", " <>
-      "[" <> commaSep (printType nameTy) bs <> "]" <>
+      (if Vector.length bs == 0
+       then mempty
+       else
+         ", " <>
+         commaSep (printType nameTy) bs
+      ) <>
       ")"

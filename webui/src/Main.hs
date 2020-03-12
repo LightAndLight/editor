@@ -17,6 +17,11 @@ main =
           )
           (pure ())
         elAttr "link"
+          ("href"=:"https://fonts.googleapis.com/css?family=Source+Sans+Pro&display=swap" <>
+           "rel"=:"stylesheet"
+          )
+          (pure ())
+        elAttr "link"
           ("href"=:"https://cdn.jsdelivr.net/npm/bulma@0.8.0/css/bulma.min.css" <>
            "rel"=:"stylesheet"
           )
