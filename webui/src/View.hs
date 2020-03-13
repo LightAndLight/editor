@@ -5,10 +5,12 @@
 {-# language PackageImports #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
+{-# language TemplateHaskell #-}
 module View where
 
 import qualified Bound
 import Bound.Var (unvar)
+import Control.Lens.TH (makeLenses)
 import Control.Monad.Fix (MonadFix)
 import qualified Data.Text as Text
 import Reflex
@@ -26,6 +28,17 @@ data NodeInfo t a
   { _nodeHovered :: Dynamic t Bool
   , _nodeFocus :: Event t (Selection a)
   }
+makeLenses ''NodeInfo
+
+instance Reflex t => Semigroup (NodeInfo t a) where
+  n1 <> n2 =
+    NodeInfo
+    { _nodeHovered = (||) <$> _nodeHovered n1 <*> _nodeHovered n2
+    , _nodeFocus = leftmost [_nodeFocus n1, _nodeFocus n2]
+    }
+
+instance Reflex t => Monoid (NodeInfo t a) where
+  mempty = NodeInfo { _nodeHovered = pure False, _nodeFocus = never }
 
 viewName ::
   (MonadHold t m, DomBuilder t m, PostBuild t m, MonadFix m) =>
@@ -146,32 +159,16 @@ viewType nameTy path dmSelection ty = do
         Syntax.TSubst{} -> error "todo"
         Syntax.TName n -> do
           text $ Syntax.unName n
-          pure $
-            NodeInfo
-            { _nodeHovered = constDyn False
-            , _nodeFocus = never
-            }
+          pure mempty
         Syntax.THole -> do
           text "_"
-          pure $
-            NodeInfo
-            { _nodeHovered = constDyn False
-            , _nodeFocus = never
-            }
+          pure mempty
         Syntax.TMeta n -> do
           text . Text.pack $ "?" <> show n
-          pure $
-            NodeInfo
-            { _nodeHovered = constDyn False
-            , _nodeFocus = never
-            }
+          pure mempty
         Syntax.TVar a -> do
           text . Syntax.unName $ nameTy a
-          pure $
-            NodeInfo
-            { _nodeHovered = constDyn False
-            , _nodeFocus = never
-            }
+          pure mempty
         Syntax.TArr a b -> do
           let
             parensa =
@@ -214,12 +211,7 @@ viewType nameTy path dmSelection ty = do
               b <*
             (if parensb then text ")" else pure ())
 
-          dH <- holdUniqDyn $ (||) <$> _nodeHovered aInfo <*> _nodeHovered bInfo
-          pure $
-            NodeInfo
-            { _nodeHovered = dH
-            , _nodeFocus = leftmost [_nodeFocus aInfo, _nodeFocus bInfo]
-            }
+          nodeHovered holdUniqDyn (aInfo <> bInfo)
         Syntax.TForall n body -> do
           text "forall"
           nInfo <-
@@ -251,14 +243,7 @@ viewType nameTy path dmSelection ty = do
               )
               (Bound.fromScope body)
 
-          dH <-
-            holdUniqDyn $
-            (||) <$> _nodeHovered nInfo <*> _nodeHovered bodyInfo
-          pure $
-            NodeInfo
-            { _nodeHovered = dH
-            , _nodeFocus = leftmost [_nodeFocus nInfo, _nodeFocus bodyInfo]
-            }
+          nodeHovered holdUniqDyn (nInfo <> bodyInfo)
   let eClicked = domEvent Click e
   dHoveredOrChild <-
     holdUniqDyn $ (||) <$> dThisHovered <*> _nodeHovered childInfo
@@ -334,25 +319,13 @@ viewTerm nameTy name path dmSelection tm = do
       case tm of
         Syntax.Name n -> do
           text $ Syntax.unName n
-          pure $
-            NodeInfo
-            { _nodeHovered = constDyn False
-            , _nodeFocus = never
-            }
+          pure mempty
         Syntax.Hole -> do
           text "_"
-          pure $
-            NodeInfo
-            { _nodeHovered = constDyn False
-            , _nodeFocus = never
-            }
+          pure mempty
         Syntax.Var a -> do
           text . Syntax.unName $ name a
-          pure $
-            NodeInfo
-            { _nodeHovered = constDyn False
-            , _nodeFocus = never
-            }
+          pure mempty
         Syntax.App a b -> do
           let
             parensa =
@@ -403,12 +376,7 @@ viewTerm nameTy name path dmSelection tm = do
               b <*
             (if parensb then text ")" else pure ())
 
-          dH <- holdUniqDyn $ (||) <$> _nodeHovered aInfo <*> _nodeHovered bInfo
-          pure $
-            NodeInfo
-            { _nodeHovered = dH
-            , _nodeFocus = leftmost [_nodeFocus aInfo, _nodeFocus bInfo]
-            }
+          nodeHovered holdUniqDyn (aInfo <> bInfo)
         Syntax.Ann a b -> do
           let
             parensa =
@@ -456,12 +424,7 @@ viewTerm nameTy name path dmSelection tm = do
               b <*
             (if parensb then text ")" else pure ())
 
-          dH <- holdUniqDyn $ (||) <$> _nodeHovered aInfo <*> _nodeHovered bInfo
-          pure $
-            NodeInfo
-            { _nodeHovered = dH
-            , _nodeFocus = leftmost [_nodeFocus aInfo, _nodeFocus bInfo]
-            }
+          nodeHovered holdUniqDyn (aInfo <> bInfo)
         Syntax.Lam n body -> do
           text "\\"
           nInfo <-
@@ -494,14 +457,7 @@ viewTerm nameTy name path dmSelection tm = do
               )
               (Bound.fromScope body)
 
-          dH <-
-            holdUniqDyn $
-            (||) <$> _nodeHovered nInfo <*> _nodeHovered bodyInfo
-          pure $
-            NodeInfo
-            { _nodeHovered = dH
-            , _nodeFocus = leftmost [_nodeFocus nInfo, _nodeFocus bodyInfo]
-            }
+          nodeHovered holdUniqDyn (nInfo <> bodyInfo)
         Syntax.LamAnn n ty body -> do
           text "\\"
           text "("
@@ -550,22 +506,7 @@ viewTerm nameTy name path dmSelection tm = do
               )
               (Bound.fromScope body)
 
-          dH <-
-            holdUniqDyn $
-            (\a b c -> a || b || c) <$>
-            _nodeHovered nInfo <*>
-            _nodeHovered tyInfo <*>
-            _nodeHovered bodyInfo
-          pure $
-            NodeInfo
-            { _nodeHovered = dH
-            , _nodeFocus =
-              leftmost
-              [ _nodeFocus nInfo
-              , _nodeFocus tyInfo
-              , _nodeFocus bodyInfo
-              ]
-            }
+          nodeHovered holdUniqDyn (nInfo <> tyInfo <> bodyInfo)
   let eClicked = domEvent Click e
   dHoveredOrChild <-
     holdUniqDyn $ (||) <$> dThisHovered <*> _nodeHovered childInfo
@@ -604,3 +545,22 @@ viewHoles nameTy holes =
     tline p1 p2 k =
       el "div" . text $
       Text.pack (show p1) <> ", " <> Text.pack (show p2) <> ": " <> Syntax.printKind k
+
+viewDecl ::
+  forall t m.
+  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
+  ) =>
+  Path Syntax.Decls Syntax.Decl ->
+  Dynamic t (Maybe (Selection Syntax.Decls)) ->
+  Syntax.Decls ->
+  m (NodeInfo t Syntax.Decl)
+viewDecl path dmSelection decls = _
+
+viewDecls ::
+  forall t m.
+  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
+  ) =>
+  Dynamic t (Maybe (Selection Syntax.Decls)) ->
+  Syntax.Decls ->
+  m (NodeInfo t Syntax.Decls)
+viewDecls dmSelection decls = _

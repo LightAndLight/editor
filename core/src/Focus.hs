@@ -36,6 +36,16 @@ nextHole = goDown Path.empty []
       Maybe (Selection x)
     search prefix bs val =
       case targetInfo @a of
+        TargetDecl ->
+          case val of
+            Syntax.Decl n ty tm ->
+              search
+                (Path.snoc prefix Path.DName)
+                (Branch (Path.snoc prefix Path.DType) ty :
+                 Branch (Path.snoc prefix Path.DTerm) tm :
+                 bs
+                )
+                n
         TargetTerm ->
           case val of
             Syntax.Hole -> Just $ Selection prefix
@@ -261,6 +271,22 @@ nextHole = goDown Path.empty []
                     bs
                     suffix'
                     val'
+            Decl n ->
+              case val of
+                Syntax.Decls ds ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (ifoldr
+                       (\i e rest ->
+                          if i <= n
+                          then Branch (Path.snoc prefix $ Path.Decl i) e : rest
+                          else rest
+                       )
+                       bs
+                       ds
+                    )
+                    suffix'
+                    (ds Vector.! n)
 
 prevHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
 prevHole = goDown Path.empty []
@@ -280,6 +306,16 @@ prevHole = goDown Path.empty []
       Maybe (Selection x)
     search prefix bs val =
       case targetInfo @a of
+        TargetDecl ->
+          case val of
+            Syntax.Decl n ty tm ->
+              search
+                (Path.snoc prefix Path.DTerm)
+                (Branch (Path.snoc prefix Path.DName) n :
+                 Branch (Path.snoc prefix Path.DType) ty :
+                 bs
+                )
+                tm
         TargetTerm ->
           case val of
             Syntax.Hole -> Just $ Selection prefix
@@ -511,3 +547,19 @@ prevHole = goDown Path.empty []
                     )
                     suffix'
                     val'
+            Decl n ->
+              case val of
+                Syntax.Decls ds ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (ifoldl
+                       (\i rest e ->
+                          if n < i
+                          then Branch (Path.snoc prefix $ Decl i) e : rest
+                          else rest
+                       )
+                       bs
+                       ds
+                    )
+                    suffix'
+                    (ds Vector.! n)

@@ -261,8 +261,8 @@ menu ::
   Event t () ->
   Event t () ->
   Event t () ->
-  Dynamic t (Focus.Selection (Syntax.Term ty tm)) ->
-  m (Dynamic t Bool, Event t [MenuAction (Syntax.Term ty tm)])
+  Dynamic t (Focus.Selection Decls) ->
+  m (Dynamic t Bool, Event t [MenuAction Decls])
 menu eOpen eClose eNextItem eEnter dSelection = do
   eAction <-
     fmap switchDyn . widgetHold (pure never) $
@@ -487,11 +487,16 @@ app =
       elAttr "div" ("class" =: Style.classes [Style.mainPanel]) $ do
         rec
           let eMenuActions = eMenuAction <> eDeleteNode
-          dEditorState <-
+          dEditorState :: Dynamic t (EditorState Decls)<-
             mkEditorState
               (EditorState
-               { _esSelection = Focus.Selection Path.empty
-               , _esContent = Syntax.Hole
+               { _esSelection =
+                 Focus.Selection $
+                 Path.singleton (Path.Decl 0)
+               , _esContent =
+                 Syntax.Decls
+                 [ Syntax.Decl (Syntax.N "val") Syntax.THole Syntax.Hole
+                 ]
                }
               )
               inputs
@@ -500,11 +505,11 @@ app =
               dMenuOpen
           let dSelection = _esSelection <$> dEditorState
           let dTerm = _esContent <$> dEditorState
-          eSelection :: Event t (Focus.Selection (Syntax.Term Name Name)) <-
+          eSelection :: Event t (Focus.Selection Decls) <-
             fmap switchDyn $
             bindDynamicM
               (fmap View._nodeFocus .
-               viewTerm id id empty (Just <$> dSelection)
+               viewDecls (Just <$> dSelection)
               )
               dTerm
           let
@@ -513,7 +518,7 @@ app =
                 (\(open, sel) _ -> do
                   guard $ not open
                   case sel of
-                    Focus.Selection (path :: Path (Syntax.Term Name Name) x) ->
+                    Focus.Selection (path :: Path Decls x) ->
                       case targetInfo @x of
                         TargetTerm -> Just [DeleteTerm path]
                         TargetType -> Just [DeleteType path]
@@ -552,7 +557,7 @@ app =
 
       dSelectionInfo :: Dynamic t (m ())
       dSelectionInfo =
-        (\(Focus.Selection (path :: Path (Term Name Name) y)) tcRes ->
+        (\(Focus.Selection (path :: Path Decls y)) tcRes ->
            case targetInfo @y of
              TargetTerm -> do
                infoItem "Form" "expr"

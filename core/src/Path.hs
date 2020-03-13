@@ -14,7 +14,7 @@ import Data.Type.Equality ((:~:)(..))
 import qualified Data.Vector as Vector
 import Data.Void (Void)
 
-import Syntax (Decl, Name, Term, Type)
+import Syntax (Decl, Decls, Name, Term, Type)
 import qualified Syntax
 
 data P a b where
@@ -39,6 +39,7 @@ data P a b where
   DName :: P Decl Name
   DType :: P Decl (Type (Bound.Var Int Void))
   DTerm :: P Decl (Term (Bound.Var Int Void) Void)
+  Decl :: Int -> P Decls Decl
 
 deriving instance Show (P a b)
 
@@ -121,6 +122,10 @@ eqP DType a =
 eqP DTerm a =
   case a of
     DTerm -> Just Refl
+    _ -> Nothing
+eqP (Decl n) a =
+  case a of
+    Decl n' | n == n' -> Just Refl
     _ -> Nothing
 
 matchP :: P a b -> a -> Maybe (b, b -> a)
@@ -218,6 +223,10 @@ matchP p a =
       case a of
         Syntax.Decl n ty tm ->
           Just (tm, \tm' -> Syntax.Decl n ty tm')
+    Decl n ->
+      case a of
+        Syntax.Decls ds ->
+          Just (ds Vector.! n, \x -> Syntax.Decls $ ds Vector.// [(n, x)])
 
 data Digit f a b where
   One :: f a b -> Digit f a b
@@ -414,6 +423,7 @@ viewr s =
 data TargetInfo b where
   TargetTerm :: TargetInfo (Term ty v)
   TargetType :: TargetInfo (Type v)
+  TargetDecl :: TargetInfo Decl
   TargetName :: TargetInfo Name
 
 class HasTargetInfo a where
@@ -422,6 +432,7 @@ class HasTargetInfo a where
 instance HasTargetInfo (Term ty tm) where; targetInfo = TargetTerm
 instance HasTargetInfo (Type ty) where; targetInfo = TargetType
 instance HasTargetInfo Name where; targetInfo = TargetName
+instance HasTargetInfo Decl where; targetInfo = TargetDecl
 
 type Path = Seq P
 

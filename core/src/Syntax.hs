@@ -241,3 +241,5 @@ data Decl
   , _declType :: Type (Bound.Var Int Void)
   , _declTerm :: Term (Bound.Var Int Void) Void
   }
+
+newtype Decls = Decls (Vector Decl)

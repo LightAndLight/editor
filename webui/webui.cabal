@@ -30,6 +30,7 @@ executable webui
                      , ghcjs-dom
                      , jsaddle
                      , jsaddle-dom
+                     , lens
                      , mtl
                      , reflex >=0.5
                      , reflex-dom >=0.5
