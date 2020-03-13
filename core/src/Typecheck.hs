@@ -625,27 +625,32 @@ unifyType kindEnv expected actual =
         _ -> typeMismatch (_keName kindEnv) expected actual
     TSubst{} -> undefined
 
+data TCEnv ty tm ty' tm'
+  = TCEnv
+  { _teName :: tm' -> Name
+  , _teNameTy :: ty' -> Name
+  , _teGlobalCtx :: Name -> Maybe (Type ty')
+  , _teCtx :: tm' -> Maybe (Type ty')
+  , _teGlobalTyCtx :: Name -> Maybe Kind
+  , _teTyCtx :: ty' -> Maybe Kind
+  , _teBoundTyVars :: Seq (Name, Type ty', Kind)
+  , _tePath :: Path (Term ty tm) (Term ty' tm')
+  }
+
 check ::
   (Eq ty', MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  (tm' -> Name) ->
-  (ty' -> Name) ->
-  (Name -> Maybe (Type ty')) ->
-  (tm' -> Maybe (Type ty')) ->
-  (Name -> Maybe Kind) ->
-  (ty' -> Maybe Kind) ->
-  Seq (Name, Type ty', Kind) ->
-  Path (Term ty tm) (Term ty' tm') ->
+  TCEnv ty tm ty' tm' ->
   Term ty' tm' ->
   Type ty' ->
   m ()
-check name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm ty = do
-  ty' <- infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm
+check tcEnv tm ty = do
+  ty' <- infer tcEnv tm
   unifyType
     (KCEnv
-     { _keName = nameTy
-     , _keGlobalCtx = tyctxG
-     , _keCtx = tyctx
-     , _keTmPath = path
+     { _keName = _teNameTy tcEnv
+     , _keGlobalCtx = _teGlobalTyCtx tcEnv
+     , _keCtx = _teTyCtx tcEnv
+     , _keTmPath = _tePath tcEnv
      , _keTyPath = Path.empty
      })
     ty
@@ -655,141 +660,103 @@ check name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm ty = do
 infer ::
   forall ty tm ty' tm' m.
   (Eq ty', MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  (tm' -> Name) ->
-  (ty' -> Name) ->
-  (Name -> Maybe (Type ty')) ->
-  (tm' -> Maybe (Type ty')) ->
-  (Name -> Maybe Kind) ->
-  (ty' -> Maybe Kind) ->
-  Seq (Name, Type ty', Kind) ->
-  Path (Term ty tm) (Term ty' tm') ->
+  TCEnv ty tm ty' tm' ->
   Term ty' tm' ->
   m (Type ty')
-infer name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm = do
-  ty <- infer' name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm
-  addInfo path $ TermInfo nameTy ty
+infer tcEnv tm = do
+  ty <- infer' tcEnv tm
+  addInfo (_tePath tcEnv) $ TermInfo (_teNameTy tcEnv) ty
   pure ty
 
 infer' ::
   forall ty tm ty' tm' m.
   (Eq ty', MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  (tm' -> Name) ->
-  (ty' -> Name) ->
-  (Name -> Maybe (Type ty')) ->
-  (tm' -> Maybe (Type ty')) ->
-  (Name -> Maybe Kind) ->
-  (ty' -> Maybe Kind) ->
-  Seq (Name, Type ty', Kind) ->
-  Path (Term ty tm) (Term ty' tm') ->
+  TCEnv ty tm ty' tm' ->
   Term ty' tm' ->
   m (Type ty')
-infer' name nameTy ctxG ctx tyctxG tyctx boundTyVars path tm =
+infer' tcEnv tm =
   case tm of
     Ann a t -> do
       checkKind
         (KCEnv
-          { _keName = nameTy
-          , _keGlobalCtx = tyctxG
-          , _keCtx = tyctx
-          , _keTmPath = path
+          { _keName = _teNameTy tcEnv
+          , _keGlobalCtx = _teGlobalTyCtx tcEnv
+          , _keCtx = _teTyCtx tcEnv
+          , _keTmPath = _tePath tcEnv
           , _keTyPath = Path.empty
           }
         )
         t
         KType
-      t <$ check name nameTy ctxG ctx tyctxG tyctx boundTyVars (Path.snoc path Path.AnnL) a t
+      t <$ check (tcEnv { _tePath = Path.snoc (_tePath tcEnv) Path.AnnL }) a t
     Hole -> do
-      t <- freshTMeta boundTyVars KType
-      addHole path nameTy (t :: Type ty')
+      t <- freshTMeta (_teBoundTyVars tcEnv) KType
+      addHole (_tePath tcEnv) (_teNameTy tcEnv) (t :: Type ty')
       pure t
     Var a ->
-      case ctx a of
-        Nothing -> throwError $ NotInScope (name a)
+      case _teCtx tcEnv a of
+        Nothing -> throwError $ NotInScope (_teName tcEnv a)
         Just ty -> pure ty
     Name a ->
-      case ctxG a of
+      case _teGlobalCtx tcEnv a of
         Nothing -> throwError $ NotInScope a
         Just ty -> pure ty
     LamAnn n ty body -> do
-      let tyPath = Path.snoc path Path.LamAnnType
+      let tyPath = Path.snoc (_tePath tcEnv) Path.LamAnnType
       checkKind
         (KCEnv
-          { _keName = nameTy
-          , _keGlobalCtx = tyctxG
-          , _keCtx = tyctx
-          , _keTmPath = path
+          { _keName = _teNameTy tcEnv
+          , _keGlobalCtx = _teGlobalTyCtx tcEnv
+          , _keCtx = _teTyCtx tcEnv
+          , _keTmPath = _tePath tcEnv
           , _keTyPath = Path.empty
           }
         )
         ty
         KType
       addInfo tyPath $ TypeInfo KType
-      let bodyPath = Path.snoc path Path.LamAnnBody
+      let bodyPath = Path.snoc (_tePath tcEnv) Path.LamAnnBody
       bodyTy <-
         infer
-          (unvar (\() -> n) name)
-          nameTy
-          ctxG
-          (unvar (\() -> Just ty) ctx)
-          tyctxG
-          tyctx
-          boundTyVars
-          bodyPath
+          (tcEnv
+           { _teName = unvar (\() -> n) (_teName tcEnv)
+           , _teCtx = unvar (\() -> Just ty) (_teCtx tcEnv)
+           , _tePath = bodyPath
+           }
+          )
           (Bound.fromScope body)
       pure $ Syntax.TArr ty bodyTy
     Lam n body -> do
-      ty <- freshTMeta boundTyVars KType
-      let bodyPath = Path.snoc path Path.LamBody
+      ty <- freshTMeta (_teBoundTyVars tcEnv) KType
+      let bodyPath = Path.snoc (_tePath tcEnv) Path.LamBody
       bodyTy <-
         infer
-          (unvar (\() -> n) name)
-          nameTy
-          ctxG
-          (unvar (\() -> Just ty) ctx)
-          tyctxG
-          tyctx
-          boundTyVars
-          bodyPath
+          (tcEnv
+           { _teName = unvar (\() -> n) (_teName tcEnv)
+           , _teCtx = unvar (\() -> Just ty) (_teCtx tcEnv)
+           , _tePath = bodyPath
+           }
+          )
           (Bound.fromScope body)
       pure $ Syntax.TArr ty bodyTy
     App f x -> do
-      let fPath = Path.snoc path Path.AppL
-      let xPath = Path.snoc path Path.AppR
-      fTy <-
-        infer
-          name
-          nameTy
-          ctxG
-          ctx
-          tyctxG
-          tyctx
-          boundTyVars
-          fPath
-          f
-      inTy <- freshTMeta boundTyVars KType
-      outTy <- freshTMeta boundTyVars KType
+      let fPath = Path.snoc (_tePath tcEnv) Path.AppL
+      let xPath = Path.snoc (_tePath tcEnv) Path.AppR
+      fTy <- infer (tcEnv { _tePath = fPath }) f
+      inTy <- freshTMeta (_teBoundTyVars tcEnv) KType
+      outTy <- freshTMeta (_teBoundTyVars tcEnv) KType
       unifyType
         (KCEnv
-         { _keName = nameTy
-         , _keGlobalCtx = tyctxG
-         , _keCtx = tyctx
+         { _keName = _teNameTy tcEnv
+         , _keGlobalCtx = _teGlobalTyCtx tcEnv
+         , _keCtx = _teTyCtx tcEnv
          , _keTmPath = fPath
          , _keTyPath = Path.empty
          })
         (TArr inTy outTy)
         fTy
       inTy' <- applySolutions inTy
-      check
-        name
-        nameTy
-        ctxG
-        ctx
-        tyctxG
-        tyctx
-        boundTyVars
-        xPath
-        x
-        inTy'
+      check (tcEnv { _tePath = xPath }) x inTy'
       outTy' <- applySolutions outTy
       applySolutions_Holes
       pure outTy'

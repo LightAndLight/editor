@@ -232,6 +232,35 @@ nextHole = goDown Path.empty []
                     suffix'
                     (xs Vector.! n)
                 _ -> Nothing
+            DName ->
+              case val of
+                Syntax.Decl val' ty tm ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DType) ty :
+                     Branch (Path.snoc prefix Path.DTerm) tm :
+                     bs
+                    )
+                    suffix'
+                    val'
+            DType ->
+              case val of
+                Syntax.Decl _ val' tm ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DTerm) tm :
+                     bs
+                    )
+                    suffix'
+                    val'
+            DTerm ->
+              case val of
+                Syntax.Decl _ _ val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    bs
+                    suffix'
+                    val'
 
 prevHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
 prevHole = goDown Path.empty []
@@ -453,3 +482,32 @@ prevHole = goDown Path.empty []
                     suffix'
                     (xs Vector.! n)
                 _ -> Nothing
+            DName ->
+              case val of
+                Syntax.Decl val' _ _ ->
+                  goDown
+                    (Path.snoc prefix p)
+                    bs
+                    suffix'
+                    val'
+            DType ->
+              case val of
+                Syntax.Decl n val' _ ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DName) n :
+                     bs
+                    )
+                    suffix'
+                    val'
+            DTerm ->
+              case val of
+                Syntax.Decl n ty val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DType) ty :
+                     Branch (Path.snoc prefix Path.DName) n :
+                     bs
+                    )
+                    suffix'
+                    val'

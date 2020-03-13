@@ -234,3 +234,10 @@ printType nameTy ty =
          commaSep (printType nameTy) bs
       ) <>
       ")"
+
+data Decl
+  = Decl
+  { _declName :: Name
+  , _declType :: Type (Bound.Var Int Void)
+  , _declTerm :: Term (Bound.Var Int Void) Void
+  }

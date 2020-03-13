@@ -314,7 +314,8 @@ runAction action (Focus.Selection oldPath, old) =
             EmptyR -> (Focus.Selection oldPath, old)
             ps :> p ->
               case p of
-                Path.TForallArg -> error "todo: annotate tvar"
+                Path.DName -> error "todo: annotate DName"
+                Path.TForallArg -> error "todo: annotate TForallArg"
                 Path.LamAnnArg->
                   case Zipper.downTo ps $ Zipper.toZipper old of
                     Nothing -> (Focus.Selection oldPath, old)
@@ -449,14 +450,17 @@ app =
       dTcRes =
         flip runStateT Typecheck.emptyTCState .
         Typecheck.infer
-          id
-          id
-          (const Nothing)
-          (const Nothing)
-          (const Nothing)
-          (const Nothing)
-          mempty
-          Path.empty <$>
+          (Typecheck.TCEnv
+           { Typecheck._teName = id
+           , Typecheck._teNameTy = id
+           , Typecheck._teGlobalCtx = const Nothing
+           , Typecheck._teCtx = const Nothing
+           , Typecheck._teGlobalTyCtx = const Nothing
+           , Typecheck._teTyCtx = const Nothing
+           , Typecheck._teBoundTyVars = mempty
+           , Typecheck._tePath = Path.empty
+           }
+          ) <$>
         dTerm
 
       dSelectionInfo :: Dynamic t (m ())

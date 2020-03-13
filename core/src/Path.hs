@@ -14,7 +14,7 @@ import Data.Type.Equality ((:~:)(..))
 import qualified Data.Vector as Vector
 import Data.Void (Void)
 
-import Syntax (Name, Term, Type)
+import Syntax (Decl, Name, Term, Type)
 import qualified Syntax
 
 data P a b where
@@ -25,7 +25,6 @@ data P a b where
   LamAnnArg :: P (Term ty a) Name
   LamAnnType :: P (Term ty a) (Type ty)
   LamAnnBody :: P (Term ty a) (Term ty (Var () a))
-
   AnnL :: P (Term ty tm) (Term ty tm)
   AnnR :: P (Term ty tm) (Type ty)
 
@@ -36,6 +35,11 @@ data P a b where
   TUnsolvedBody :: P (Type a) (Type (Var Int Void))
   TSubstL :: P (Type a) (Type a)
   TSubstR :: Int -> P (Type a) (Type a)
+
+  DName :: P Decl Name
+  DType :: P Decl (Type (Bound.Var Int Void))
+  DTerm :: P Decl (Term (Bound.Var Int Void) Void)
+
 deriving instance Show (P a b)
 
 nameLeaf :: P Name a -> Void
@@ -105,6 +109,18 @@ eqP TSubstL a =
 eqP (TSubstR n) a =
   case a of
     TSubstR n' | n == n' -> Just Refl
+    _ -> Nothing
+eqP DName a =
+  case a of
+    DName -> Just Refl
+    _ -> Nothing
+eqP DType a =
+  case a of
+    DType -> Just Refl
+    _ -> Nothing
+eqP DTerm a =
+  case a of
+    DTerm -> Just Refl
     _ -> Nothing
 
 matchP :: P a b -> a -> Maybe (b, b -> a)
@@ -190,6 +206,18 @@ matchP p a =
         Syntax.TSubst x y ->
           Just (y Vector.! n, \e' -> Syntax.TSubst x (y Vector.// [(n, e')]))
         _ -> Nothing
+    DName ->
+      case a of
+        Syntax.Decl n ty tm ->
+          Just (n, \n' -> Syntax.Decl n' ty tm)
+    DType ->
+      case a of
+        Syntax.Decl n ty tm ->
+          Just (ty, \ty' -> Syntax.Decl n ty' tm)
+    DTerm ->
+      case a of
+        Syntax.Decl n ty tm ->
+          Just (tm, \tm' -> Syntax.Decl n ty tm')
 
 data Digit f a b where
   One :: f a b -> Digit f a b
