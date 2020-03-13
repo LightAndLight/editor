@@ -14,6 +14,7 @@ import Control.Monad (guard)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.State (runStateT)
 import Control.Monad.Trans.Class (lift)
+import Data.Foldable (foldl')
 import Data.Functor (void)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -219,7 +220,7 @@ menuForTarget ::
   Event t () ->
   Event t () ->
   Path a b ->
-  m (Event t (MenuAction a))
+  m (Event t [MenuAction a])
 menuForTarget eNextItem eEnter path =
   elAttr "div" ("class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
@@ -242,6 +243,7 @@ menuForTarget eNextItem eEnter path =
         (uncurry renderMenuActions)
         ((,) <$> dSelection <*> dItems)
     pure .
+      fmap (\x -> [x]) .
       gate (current dInputValid) $
       leftmost
       [ (Vector.!) <$> current dItems <@> eItemClicked
@@ -260,7 +262,7 @@ menu ::
   Event t () ->
   Event t () ->
   Dynamic t (Focus.Selection (Syntax.Term ty tm)) ->
-  m (Dynamic t Bool, Event t (MenuAction (Syntax.Term ty tm)))
+  m (Dynamic t Bool, Event t [MenuAction (Syntax.Term ty tm)])
 menu eOpen eClose eNextItem eEnter dSelection = do
   eAction <-
     fmap switchDyn . widgetHold (pure never) $
@@ -275,50 +277,78 @@ menu eOpen eClose eNextItem eEnter dSelection = do
 runAction ::
   HasTargetInfo a =>
   MenuAction a ->
-  (Focus.Selection a, a) ->
-  (Focus.Selection a, a)
-runAction action (Focus.Selection oldPath, old) =
+  EditorState a ->
+  EditorState a
+runAction action es =
   case action of
     InsertLam path ->
-      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     InsertLamAnn path ->
-      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.LamAnn "x" Syntax.THole $ lift Syntax.Hole) (Path.singleton Path.LamAnnType)) old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.LamAnn "x" Syntax.THole $ lift Syntax.Hole) (Path.singleton Path.LamAnnType)) (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     InsertApp path ->
-      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     InsertName path n ->
-      case Edit.edit path targetInfo (Edit.ModifyName $ const n) old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+      case Edit.edit path targetInfo (Edit.ModifyName $ const n) (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     InsertVar path n ->
-      case Edit.edit path targetInfo (Edit.InsertVar n) old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
+      case Edit.edit path targetInfo (Edit.InsertVar n) (_esContent es) of
+        Left err -> Debug.traceShow err es
         Right (newPath, _, new) ->
           case Focus.nextHole newPath new of
-            Nothing -> (Focus.Selection newPath, new)
-            Just newPath' -> (newPath', new)
+            Nothing ->
+              es
+              { _esSelection = Focus.Selection newPath
+              , _esContent = new
+              }
+            Just newPath' ->
+              es
+              { _esSelection = newPath'
+              , _esContent = new
+              }
     Annotate (path :: Path a x) ->
       case targetInfo @x of
         TargetType -> error "todo: annotate type"
         TargetTerm ->
-          case Edit.edit path targetInfo (Edit.ModifyTerm (`Syntax.Ann` Syntax.THole) $ Path.singleton Path.AnnR) old of
-            Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-            Right (newPath, _, new) -> (Focus.Selection newPath, new)
+          case Edit.edit path targetInfo (Edit.ModifyTerm (`Syntax.Ann` Syntax.THole) $ Path.singleton Path.AnnR) (_esContent es) of
+            Left err -> Debug.traceShow err es
+            Right (newPath, _, new) ->
+              es
+              { _esSelection = Focus.Selection newPath
+              , _esContent = new
+              }
         TargetName ->
           case Path.viewr path of
-            EmptyR -> (Focus.Selection oldPath, old)
+            EmptyR -> es
             ps :> p ->
               case p of
                 Path.DName -> error "todo: annotate DName"
                 Path.TForallArg -> error "todo: annotate TForallArg"
                 Path.LamAnnArg->
-                  case Zipper.downTo ps $ Zipper.toZipper old of
-                    Nothing -> (Focus.Selection oldPath, old)
+                  case Zipper.downTo ps $ Zipper.toZipper (_esContent es) of
+                    Nothing -> es
                     Just z ->
                       case Zipper._focus z of
                         Syntax.LamAnn n _ body ->
@@ -328,11 +358,14 @@ runAction action (Focus.Selection oldPath, old) =
                               z { Zipper._focus = Syntax.LamAnn n THole body }
                             newPath = Path.snoc ps Path.LamAnnType
                           in
-                            (Focus.Selection newPath, new)
+                            es
+                            { _esSelection = Focus.Selection newPath
+                            , _esContent = new
+                            }
                         _ -> undefined
                 Path.LamArg ->
-                  case Zipper.downTo ps $ Zipper.toZipper old of
-                    Nothing -> (Focus.Selection oldPath, old)
+                  case Zipper.downTo ps $ Zipper.toZipper (_esContent es) of
+                    Nothing -> es
                     Just z ->
                       case Zipper._focus z of
                         Syntax.Lam n body ->
@@ -342,21 +375,36 @@ runAction action (Focus.Selection oldPath, old) =
                               z { Zipper._focus = Syntax.LamAnn n THole body }
                             newPath = Path.snoc ps Path.LamAnnType
                           in
-                            (Focus.Selection newPath, new)
+                            es
+                            { _esSelection = Focus.Selection newPath
+                            , _esContent = new
+                            }
                         _ -> undefined
     InsertTArr path ->
-      case Edit.edit path targetInfo (Edit.InsertType (Syntax.TArr Syntax.THole Syntax.THole) (Path.singleton Path.TArrL)) old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+      case Edit.edit path targetInfo (Edit.InsertType (Syntax.TArr Syntax.THole Syntax.THole) (Path.singleton Path.TArrL)) (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     DeleteTerm path ->
-      case Edit.edit path TargetTerm Edit.DeleteTerm old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-        Right (newPath, _, new) -> (Focus.Selection newPath, new)
+      case Edit.edit path TargetTerm Edit.DeleteTerm (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     DeleteType path ->
-      case Edit.edit path TargetType Edit.DeleteType old of
-        Left err -> Debug.traceShow err (Focus.Selection oldPath, old)
-        Right (newPath, _, new) -> (Focus.Selection newPath, new)
-    Other{} -> (Focus.Selection oldPath, old)
+      case Edit.edit path TargetType Edit.DeleteType (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
+    Other{} -> es
 
 infoItem :: DomBuilder t m => Text -> Text -> m ()
 infoItem left right =
@@ -377,6 +425,53 @@ infoItem left right =
         ("class" =: ("level-item " <> Style.classes [Style.code]))
         (text right)
 
+data EditorState a
+  = EditorState
+  { _esSelection :: Focus.Selection a
+  , _esContent :: a
+  }
+
+mkEditorState ::
+  ( HasTargetInfo a
+  , Reflex t, MonadHold t m, MonadFix m
+  ) =>
+  EditorState a ->
+  Inputs t ->
+  Event t (Focus.Selection a) ->
+  Event t [MenuAction a] ->
+  Dynamic t Bool ->
+  m (Dynamic t (EditorState a))
+mkEditorState initial inputs eSelection eMenuActions dMenuOpen = do
+  let
+    eNextHole =
+      (\es ->
+        case _esSelection es of
+          Focus.Selection p ->
+            case Focus.nextHole p (_esContent es) of
+              Nothing -> es
+              Just p' -> es { _esSelection = p' }
+      ) <$
+      gate (not <$> current dMenuOpen) (_iTab inputs)
+    ePrevHole =
+      (\es ->
+        case _esSelection es of
+          Focus.Selection p ->
+            case Focus.prevHole p (_esContent es) of
+              Nothing -> es
+              Just p' -> es { _esSelection = p' }
+      ) <$
+      gate (not <$> current dMenuOpen) (_iShiftTab inputs)
+  foldDyn
+    ($)
+    initial
+    (mergeWith (.)
+      [ (\acts es -> foldl' (flip runAction) es acts) <$> eMenuActions
+      , eNextHole
+      , ePrevHole
+      , (\p es -> es { _esSelection = p }) <$> eSelection
+      ]
+    )
+
 app ::
   forall t m.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
@@ -391,39 +486,26 @@ app =
     (dTerm, dSelection) <-
       elAttr "div" ("class" =: Style.classes [Style.mainPanel]) $ do
         rec
-          let
-            eNextHole =
-              (\(Focus.Selection p, a) ->
-                case Focus.nextHole p a of
-                  Nothing -> (Focus.Selection p, a)
-                  Just p' -> (p', a)
-              ) <$
-              gate (not <$> current dMenuOpen) (_iTab inputs)
-            ePrevHole =
-              (\(Focus.Selection p, a) ->
-                case Focus.prevHole p a of
-                  Nothing -> (Focus.Selection p, a)
-                  Just p' -> (p', a)
-              ) <$
-              gate (not <$> current dMenuOpen) (_iShiftTab inputs)
-          dPathTerm <-
-            foldDyn
-              ($)
-              (Focus.Selection Path.empty, Syntax.Hole)
-              (mergeWith (.)
-              [ runAction <$> eMenuAction
-              , runAction <$> eDeleteNode
-              , eNextHole
-              , ePrevHole
-              , (\p (_, a) -> (p, a)) <$> eSelection
-              ]
+          let eMenuActions = eMenuAction <> eDeleteNode
+          dEditorState <-
+            mkEditorState
+              (EditorState
+               { _esSelection = Focus.Selection Path.empty
+               , _esContent = Syntax.Hole
+               }
               )
-          let dSelection = fst <$> dPathTerm
-          let dTerm = snd <$> dPathTerm
+              inputs
+              eSelection
+              eMenuActions
+              dMenuOpen
+          let dSelection = _esSelection <$> dEditorState
+          let dTerm = _esContent <$> dEditorState
           eSelection :: Event t (Focus.Selection (Syntax.Term Name Name)) <-
             fmap switchDyn $
             bindDynamicM
-              (fmap View._nodeFocus . viewTerm id id empty (Just <$> dSelection))
+              (fmap View._nodeFocus .
+               viewTerm id id empty (Just <$> dSelection)
+              )
               dTerm
           let
             eDeleteNode =
@@ -433,8 +515,8 @@ app =
                   case sel of
                     Focus.Selection (path :: Path (Syntax.Term Name Name) x) ->
                       case targetInfo @x of
-                        TargetTerm -> Just $ DeleteTerm path
-                        TargetType -> Just $ DeleteType path
+                        TargetTerm -> Just [DeleteTerm path]
+                        TargetType -> Just [DeleteType path]
                         TargetName -> Nothing
                 )
                 ((,) <$> current dMenuOpen <*> current dSelection)
@@ -446,7 +528,12 @@ app =
             menu eOpenMenu eCloseMenu (_iTab inputs) (_iEnter inputs) dSelection
         pure (dTerm, dSelection)
     let
-      dTcRes :: Dynamic t (Either Typecheck.TypeError (Type Name, Typecheck.TCState Name Name))
+      dTcRes ::
+        Dynamic t
+          (Either
+             Typecheck.TypeError
+             (Type Name, Typecheck.TCState Name Name)
+          )
       dTcRes =
         flip runStateT Typecheck.emptyTCState .
         Typecheck.infer
