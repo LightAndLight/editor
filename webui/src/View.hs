@@ -46,229 +46,141 @@ viewName ::
   (MonadHold t m, DomBuilder t m, PostBuild t m, MonadFix m) =>
   HasTargetInfo b =>
   (b -> Syntax.Name) ->
-  Path (Syntax.Term ty tm) b ->
   Dynamic t (Maybe (Selection b)) ->
+  Path a b ->
   b ->
-  m (NodeInfo t (Syntax.Term ty tm))
-viewName name path dmSelection v = do
-  rec
-    let eMouseEnter = domEvent Mouseenter e
-    let eMouseLeave = domEvent Mouseleave e
-    let eMouseDown = domEvent Mousedown e
-    let eMouseUp = domEvent Mouseup e
-    dThisHovered <-
-      holdDyn False $
-      leftmost [True <$ eMouseEnter, False <$ eMouseLeave]
-    dHovered <- holdUniqDyn dThisHovered
-    dMouseHeld <-
-      holdDyn False $
-      gate
-        (current dHovered)
-        (leftmost [True <$ eMouseDown, False <$ eMouseUp])
-    let
-      dSelected =
-        (\mSelection ->
-           case mSelection of
-             Nothing -> False
-             Just (Selection path') ->
-               case viewl path' of
-                 EmptyL -> True
-                 _ :< _ -> False
-        ) <$>
-        dmSelection
-    (e, _) <-
-      elDynClass'
-        "span"
-        ((\hovered selected clicking ->
-            classes $
-            [ Style.code, Style.focusable, Style.node, Style.leaf ] <>
-            [ Style.selected | selected ] <>
-            [ Style.hovered | hovered ] <>
-            [ Style.clicking | clicking ]
-         ) <$>
-         dHovered <*>
-         dSelected <*>
-         dMouseHeld
-        )
-        (text . Syntax.unName $ name v)
-  let eClicked = domEvent Click e
-  pure $
-    NodeInfo
-    { _nodeHovered = dHovered
-    , _nodeFocus = Selection path <$ gate (current dHovered) eClicked
-    }
+  m (NodeInfo t a)
+viewName name dmSelection path v =
+  viewNode (const True) dmSelection path (\a -> mempty <$ text (Syntax.unName $ name a)) v
 
-viewType ::
-  forall t m ty ty' tm.
+viewTypeChildren ::
+  forall t m a ty' tm.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
   (ty' -> Syntax.Name) ->
-  Path (Syntax.Term ty tm) (Syntax.Type ty') ->
   Dynamic t (Maybe (Selection (Syntax.Type ty'))) ->
+  Path a (Syntax.Type ty') ->
   Syntax.Type ty' ->
-  m (NodeInfo t (Syntax.Term ty tm))
-viewType nameTy path dmSelection ty = do
-  rec
-    let eMouseEnter = domEvent Mouseenter e
-    let eMouseLeave = domEvent Mouseleave e
-    let eMouseDown = domEvent Mousedown e
-    let eMouseUp = domEvent Mouseup e
-    dThisHovered <-
-      holdDyn False $
-      leftmost [True <$ eMouseEnter, False <$ eMouseLeave]
-    dHovered <-
-      holdUniqDyn $
-      (\a b -> a && not b) <$>
-      dThisHovered <*>
-      _nodeHovered childInfo
-    dMouseHeld <-
-      holdDyn False $
-      gate
-        (current dHovered)
-        (leftmost [True <$ eMouseDown, False <$ eMouseUp])
-    let
-      dSelected =
-        (\mSelection ->
-           case mSelection of
-             Nothing -> False
-             Just (Selection path') ->
-               case viewl path' of
-                 EmptyL -> True
-                 _ :< _ -> False
-        ) <$>
-        dmSelection
-    (e, childInfo) <-
-      elDynClass'
-        "span"
-        ((\hovered selected clicking ->
-            classes $
-            [ Style.code, Style.focusable, Style.node ] <>
-            [ Style.selected | selected ] <>
-            [ Style.hovered | hovered ] <>
-            [ Style.clicking | clicking ] <>
-            (case ty of
-               Syntax.THole{} -> [ Style.leaf ]
-               Syntax.TVar{} -> [ Style.leaf ]
-               _ -> []
+  m (NodeInfo t a)
+viewTypeChildren nameTy dmSelection path ty = do
+  case ty of
+    Syntax.TUnsolved{} -> error "todo"
+    Syntax.TSubst{} -> error "todo"
+    Syntax.TName n -> do
+      text $ Syntax.unName n
+      pure mempty
+    Syntax.THole -> do
+      text "_"
+      pure mempty
+    Syntax.TMeta n -> do
+      text . Text.pack $ "?" <> show n
+      pure mempty
+    Syntax.TVar a -> do
+      text . Syntax.unName $ nameTy a
+      pure mempty
+    Syntax.TArr a b -> do
+      let
+        parensa =
+          case a of
+            Syntax.TArr{} -> True
+            Syntax.TForall{} -> True
+            _ -> False
+      aInfo <-
+        (if parensa then text "(" else pure ()) *>
+        viewType
+          nameTy
+          (
+            (>>=
+            \(Selection f) -> case viewl f of
+              TArrL :< rest -> Just (Selection rest)
+              _ -> Nothing
+            ) <$>
+            dmSelection
+          )
+          (snoc path TArrL)
+          a <*
+        (if parensa then text ")" else pure ())
+
+      text "->"
+
+      let parensb = False
+      bInfo <-
+        (if parensb then text "(" else pure ()) *>
+        viewType
+          nameTy
+          (fmap
+              (>>=
+              \(Selection f) -> case viewl f of
+                TArrR :< rest -> Just (Selection rest)
+                _ -> Nothing
+              )
+              dmSelection
+          )
+          (snoc path TArrR)
+          b <*
+        (if parensb then text ")" else pure ())
+
+      nodeHovered holdUniqDyn (aInfo <> bInfo)
+    Syntax.TForall n body -> do
+      text "forall"
+      nInfo <-
+        viewName
+          id
+          (fmap
+            (>>=
+              \(Selection f) -> case viewl f of
+                Path.TForallArg :< rest -> Just (Selection rest)
+                _ -> Nothing
             )
-         ) <$>
-         dHovered <*>
-         dSelected <*>
-         dMouseHeld
-        ) $
-      case ty of
-        Syntax.TUnsolved{} -> error "todo"
-        Syntax.TSubst{} -> error "todo"
-        Syntax.TName n -> do
-          text $ Syntax.unName n
-          pure mempty
-        Syntax.THole -> do
-          text "_"
-          pure mempty
-        Syntax.TMeta n -> do
-          text . Text.pack $ "?" <> show n
-          pure mempty
-        Syntax.TVar a -> do
-          text . Syntax.unName $ nameTy a
-          pure mempty
-        Syntax.TArr a b -> do
-          let
-            parensa =
-              case a of
-                Syntax.TArr{} -> True
-                Syntax.TForall{} -> True
-                _ -> False
-          aInfo <-
-            (if parensa then text "(" else pure ()) *>
-            viewType
-              nameTy
-              (snoc path TArrL)
-              (
-               (>>=
-               \(Selection f) -> case viewl f of
-                 TArrL :< rest -> Just (Selection rest)
-                 _ -> Nothing
-               ) <$>
-               dmSelection
+            dmSelection
+          )
+          (Path.snoc path TForallArg)
+          n
+      text "."
+      bodyInfo <-
+        viewType
+          (unvar (\() -> n) nameTy)
+          (fmap
+              (>>=
+              \(Selection f) ->
+                case viewl f of
+                  TForallBody :< rest -> Just (Selection rest)
+                  _ -> Nothing
               )
-              a <*
-            (if parensa then text ")" else pure ())
+              dmSelection
+          )
+          (snoc path TForallBody)
+          (Bound.fromScope body)
 
-          text "->"
+      nodeHovered holdUniqDyn (nInfo <> bodyInfo)
 
-          let parensb = False
-          bInfo <-
-            (if parensb then text "(" else pure ()) *>
-            viewType
-              nameTy
-              (snoc path TArrR)
-              (fmap
-                 (>>=
-                  \(Selection f) -> case viewl f of
-                    TArrR :< rest -> Just (Selection rest)
-                    _ -> Nothing
-                 )
-                 dmSelection
-              )
-              b <*
-            (if parensb then text ")" else pure ())
-
-          nodeHovered holdUniqDyn (aInfo <> bInfo)
-        Syntax.TForall n body -> do
-          text "forall"
-          nInfo <-
-            viewName
-              id
-              (Path.snoc path TForallArg)
-              (fmap
-                (>>=
-                  \(Selection f) -> case viewl f of
-                    Path.TForallArg :< rest -> Just (Selection rest)
-                    _ -> Nothing
-                )
-                dmSelection
-              )
-              n
-          text "."
-          bodyInfo <-
-            viewType
-              (unvar (\() -> n) nameTy)
-              (snoc path TForallBody)
-              (fmap
-                 (>>=
-                  \(Selection f) ->
-                   case viewl f of
-                     TForallBody :< rest -> Just (Selection rest)
-                     _ -> Nothing
-                 )
-                 dmSelection
-              )
-              (Bound.fromScope body)
-
-          nodeHovered holdUniqDyn (nInfo <> bodyInfo)
-  let eClicked = domEvent Click e
-  dHoveredOrChild <-
-    holdUniqDyn $ (||) <$> dThisHovered <*> _nodeHovered childInfo
-  pure $
-    NodeInfo
-    { _nodeHovered = dHoveredOrChild
-    , _nodeFocus =
-      leftmost
-      [ Selection path <$ gate (current dHovered) eClicked
-      , _nodeFocus childInfo
-      ]
-    }
+viewType ::
+  forall t m a ty'.
+  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
+  ) =>
+  (ty' -> Syntax.Name) ->
+  Dynamic t (Maybe (Selection (Syntax.Type ty'))) ->
+  Path a (Syntax.Type ty') ->
+  Syntax.Type ty' ->
+  m (NodeInfo t a)
+viewType nameTy dmSelection path ty =
+  viewNode
+    (\case; Syntax.TVar{} -> True; Syntax.THole -> True; _ -> False)
+    dmSelection
+    path
+    (viewTypeChildren nameTy dmSelection path)
+    ty
 
 viewTermChildren ::
-  forall t m a ty tm tm'.
+  forall t m a ty tm'.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
   (ty -> Syntax.Name) ->
   (tm' -> Syntax.Name) ->
   Dynamic t (Maybe (Focus.Selection (Syntax.Term ty tm'))) ->
-  Path (Syntax.Term ty tm) (Syntax.Term ty tm') ->
+  Path a (Syntax.Term ty tm') ->
   Syntax.Term ty tm' ->
-  m (NodeInfo t (Syntax.Term ty tm))
+  m (NodeInfo t a)
 viewTermChildren nameTy name dmSelection path tm =
   case tm of
     Syntax.Name n -> do
@@ -366,7 +278,6 @@ viewTermChildren nameTy name dmSelection path tm =
         (if parensb then text "(" else pure ()) *>
         viewType
           nameTy
-          (snoc path AnnR)
           (fmap
               (>>=
               \(Selection f) -> case viewl f of
@@ -375,6 +286,7 @@ viewTermChildren nameTy name dmSelection path tm =
               )
               dmSelection
           )
+          (snoc path AnnR)
           b <*
         (if parensb then text ")" else pure ())
 
@@ -384,7 +296,6 @@ viewTermChildren nameTy name dmSelection path tm =
       nInfo <-
         viewName
           id
-          (Path.snoc path Path.LamArg)
           (fmap
             (>>=
               \(Selection f) -> case viewl f of
@@ -393,6 +304,7 @@ viewTermChildren nameTy name dmSelection path tm =
             )
             dmSelection
           )
+          (Path.snoc path Path.LamArg)
           n
       text "->"
       bodyInfo <-
@@ -418,7 +330,6 @@ viewTermChildren nameTy name dmSelection path tm =
       nInfo <-
         viewName
           id
-          (Path.snoc path Path.LamAnnArg)
           (fmap
             (>>=
               \(Selection f) -> case viewl f of
@@ -427,12 +338,12 @@ viewTermChildren nameTy name dmSelection path tm =
             )
             dmSelection
           )
+          (Path.snoc path Path.LamAnnArg)
           n
       text ":"
       tyInfo <-
         viewType
           nameTy
-          (Path.snoc path LamAnnType)
           (fmap
             (>>=
               \(Selection f) -> case viewl f of
@@ -441,6 +352,7 @@ viewTermChildren nameTy name dmSelection path tm =
             )
             dmSelection
           )
+          (Path.snoc path LamAnnType)
           ty
       text ")"
       text " ->"
@@ -463,36 +375,35 @@ viewTermChildren nameTy name dmSelection path tm =
       nodeHovered holdUniqDyn (nInfo <> tyInfo <> bodyInfo)
 
 viewTerm ::
-  forall t m ty tm tm'.
+  forall t m a ty tm'.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
   (ty -> Syntax.Name) ->
   (tm' -> Syntax.Name) ->
   Dynamic t (Maybe (Selection (Syntax.Term ty tm'))) ->
-  Path (Syntax.Term ty tm) (Syntax.Term ty tm') ->
+  Path a (Syntax.Term ty tm') ->
   Syntax.Term ty tm' ->
-  m (NodeInfo t (Syntax.Term ty tm))
-viewTerm nameTy name =
+  m (NodeInfo t a)
+viewTerm nameTy name dmSelection path tm =
   viewNode
     (\case; Syntax.Var{} -> True; Syntax.Hole -> True; _ -> False)
-    (viewTermChildren nameTy name)
+    dmSelection
+    path
+    (viewTermChildren nameTy name dmSelection path)
+    tm
 
 viewNode ::
-  forall t m ty tm a.
+  forall t m a val ty tm.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
-  , HasTargetInfo a
+  , HasTargetInfo val
   ) =>
-  (a -> Bool) ->
-  (Dynamic t (Maybe (Selection a)) ->
-   Path (Syntax.Term ty tm) a ->
-   a ->
-   m (NodeInfo t (Syntax.Term ty tm))
-  ) ->
-  Dynamic t (Maybe (Selection a)) ->
-  Path (Syntax.Term ty tm) a ->
-  a ->
-  m (NodeInfo t (Syntax.Term ty tm))
-viewNode isLeaf f dmSelection path tm = do
+  (val -> Bool) ->
+  Dynamic t (Maybe (Selection val)) ->
+  Path a val ->
+  (val -> m (NodeInfo t a)) ->
+  val ->
+  m (NodeInfo t a)
+viewNode isLeaf dmSelection path f tm = do
   rec
     dThisHovered <-
       holdDyn False $
@@ -530,7 +441,7 @@ viewNode isLeaf f dmSelection path tm = do
          dSelected <*>
          dMouseHeld
         )
-        (f dmSelection path tm)
+        (f tm)
   nodeHovered holdUniqDyn $
     NodeInfo
     { _nodeHovered = dThisHovered
@@ -565,20 +476,21 @@ viewHoles nameTy holes =
       Text.pack (show p1) <> ", " <> Text.pack (show p2) <> ": " <> Syntax.printKind k
 
 viewDecl ::
-  forall t m.
+  forall t m a.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
-  Path Syntax.Decls Syntax.Decl ->
-  Dynamic t (Maybe (Selection Syntax.Decls)) ->
-  Syntax.Decls ->
-  m (NodeInfo t Syntax.Decl)
+  Path a Syntax.Decl ->
+  Dynamic t (Maybe (Selection Syntax.Decl)) ->
+  Syntax.Decl ->
+  m (NodeInfo t a)
 viewDecl path dmSelection decls = _
 
 viewDecls ::
-  forall t m.
+  forall t m a.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
+  Path a Syntax.Decls ->
   Dynamic t (Maybe (Selection Syntax.Decls)) ->
   Syntax.Decls ->
-  m (NodeInfo t Syntax.Decls)
-viewDecls dmSelection decls = _
+  m (NodeInfo t a)
+viewDecls path dmSelection decls = _
