@@ -257,6 +257,12 @@ instance Show (Seq P a b) where
 empty :: Seq f a a
 empty = Empty
 
+isEmpty :: Seq f a b -> Bool
+isEmpty a =
+  case viewl a of
+    EmptyL -> True
+    _ -> False
+
 singleton :: f a b -> Seq f a b
 singleton = Single
 

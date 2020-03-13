@@ -3,6 +3,7 @@
 {-# language LambdaCase #-}
 {-# language OverloadedStrings #-}
 {-# language PackageImports #-}
+{-# language RankNTypes #-}
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language TemplateHaskell #-}
@@ -18,6 +19,7 @@ import Reflex.Dom
 
 import Focus (Selection(..))
 import Path (Path, P(..), ViewL(..), HasTargetInfo, viewl, snoc)
+import qualified Path
 import Typecheck (Holes(..))
 import Style (classes)
 import qualified Style
@@ -257,45 +259,261 @@ viewType nameTy path dmSelection ty = do
       ]
     }
 
+viewTermChildren ::
+  forall t m a ty tm tm'.
+  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
+  ) =>
+  (ty -> Syntax.Name) ->
+  (tm' -> Syntax.Name) ->
+  Dynamic t (Maybe (Focus.Selection (Syntax.Term ty tm'))) ->
+  Path (Syntax.Term ty tm) (Syntax.Term ty tm') ->
+  Syntax.Term ty tm' ->
+  m (NodeInfo t (Syntax.Term ty tm))
+viewTermChildren nameTy name dmSelection path tm =
+  case tm of
+    Syntax.Name n -> do
+      text $ Syntax.unName n
+      pure mempty
+    Syntax.Hole -> do
+      text "_"
+      pure mempty
+    Syntax.Var a -> do
+      text . Syntax.unName $ name a
+      pure mempty
+    Syntax.App a b -> do
+      let
+        parensa =
+          case a of
+            Syntax.Lam{} -> True
+            Syntax.LamAnn{} -> True
+            Syntax.Ann{} -> True
+            _ -> False
+      aInfo <-
+        (if parensa then text "(" else pure ()) *>
+        viewTerm
+          nameTy
+          name
+          (
+            (>>=
+            \(Selection f) -> case viewl f of
+              AppL :< rest -> Just (Selection rest)
+              _ -> Nothing
+            ) <$>
+            dmSelection
+          )
+          (snoc path AppL)
+          a <*
+        (if parensa then text ")" else pure ())
+
+      let
+        parensb =
+          case b of
+            Syntax.Lam{} -> True
+            Syntax.LamAnn{} -> True
+            Syntax.App{} -> True
+            Syntax.Ann{} -> True
+            _ -> False
+      bInfo <-
+        (if parensb then text "(" else pure ()) *>
+        viewTerm
+          nameTy
+          name
+          (fmap
+              (>>=
+              \(Selection f) -> case viewl f of
+                AppR :< rest -> Just (Selection rest)
+                _ -> Nothing
+              )
+              dmSelection
+          )
+          (snoc path AppR)
+          b <*
+        (if parensb then text ")" else pure ())
+
+      nodeHovered holdUniqDyn (aInfo <> bInfo)
+    Syntax.Ann a b -> do
+      let
+        parensa =
+          case a of
+            Syntax.Lam{} -> True
+            Syntax.LamAnn{} -> True
+            Syntax.Ann{} -> True
+            _ -> False
+      aInfo <-
+        (if parensa then text "(" else pure ()) *>
+        viewTerm
+          nameTy
+          name
+          (
+            (>>=
+            \(Selection f) -> case viewl f of
+              AnnL :< rest -> Just (Selection rest)
+              _ -> Nothing
+            ) <$>
+            dmSelection
+          )
+          (snoc path AnnL)
+          a <*
+        (if parensa then text ")" else pure ())
+
+      text ":"
+
+      let
+        parensb =
+          case b of
+            _ -> False
+      bInfo <-
+        (if parensb then text "(" else pure ()) *>
+        viewType
+          nameTy
+          (snoc path AnnR)
+          (fmap
+              (>>=
+              \(Selection f) -> case viewl f of
+                AnnR :< rest -> Just (Selection rest)
+                _ -> Nothing
+              )
+              dmSelection
+          )
+          b <*
+        (if parensb then text ")" else pure ())
+
+      nodeHovered holdUniqDyn (aInfo <> bInfo)
+    Syntax.Lam n body -> do
+      text "\\"
+      nInfo <-
+        viewName
+          id
+          (Path.snoc path Path.LamArg)
+          (fmap
+            (>>=
+              \(Selection f) -> case viewl f of
+                Path.LamArg :< rest -> Just (Selection rest)
+                _ -> Nothing
+            )
+            dmSelection
+          )
+          n
+      text "->"
+      bodyInfo <-
+        viewTerm
+          nameTy
+          (unvar (\() -> n) name)
+          (
+            (>>=
+            \(Selection f) ->
+              case viewl f of
+                LamBody :< rest -> Just (Selection rest)
+                _ -> Nothing
+            ) <$>
+            dmSelection
+          )
+          (snoc path LamBody)
+          (Bound.fromScope body)
+
+      nodeHovered holdUniqDyn (nInfo <> bodyInfo)
+    Syntax.LamAnn n ty body -> do
+      text "\\"
+      text "("
+      nInfo <-
+        viewName
+          id
+          (Path.snoc path Path.LamAnnArg)
+          (fmap
+            (>>=
+              \(Selection f) -> case viewl f of
+                Path.LamAnnArg :< rest -> Just (Selection rest)
+                _ -> Nothing
+            )
+            dmSelection
+          )
+          n
+      text ":"
+      tyInfo <-
+        viewType
+          nameTy
+          (Path.snoc path LamAnnType)
+          (fmap
+            (>>=
+              \(Selection f) -> case viewl f of
+                Path.LamAnnType :< rest -> Just (Selection rest)
+                _ -> Nothing
+            )
+            dmSelection
+          )
+          ty
+      text ")"
+      text " ->"
+      bodyInfo <-
+        viewTerm
+          nameTy
+          (unvar (\() -> n) name)
+          (
+            (>>=
+            \(Selection f) ->
+              case viewl f of
+                LamAnnBody :< rest -> Just (Selection rest)
+                _ -> Nothing
+            ) <$>
+            dmSelection
+          )
+          (snoc path LamAnnBody)
+          (Bound.fromScope body)
+
+      nodeHovered holdUniqDyn (nInfo <> tyInfo <> bodyInfo)
+
 viewTerm ::
   forall t m ty tm tm'.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
   (ty -> Syntax.Name) ->
   (tm' -> Syntax.Name) ->
-  Path (Syntax.Term ty tm) (Syntax.Term ty tm') ->
   Dynamic t (Maybe (Selection (Syntax.Term ty tm'))) ->
+  Path (Syntax.Term ty tm) (Syntax.Term ty tm') ->
   Syntax.Term ty tm' ->
   m (NodeInfo t (Syntax.Term ty tm))
-viewTerm nameTy name path dmSelection tm = do
+viewTerm nameTy name =
+  viewNode
+    (\case; Syntax.Var{} -> True; Syntax.Hole -> True; _ -> False)
+    (viewTermChildren nameTy name)
+
+viewNode ::
+  forall t m ty tm a.
+  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
+  , HasTargetInfo a
+  ) =>
+  (a -> Bool) ->
+  (Dynamic t (Maybe (Selection a)) ->
+   Path (Syntax.Term ty tm) a ->
+   a ->
+   m (NodeInfo t (Syntax.Term ty tm))
+  ) ->
+  Dynamic t (Maybe (Selection a)) ->
+  Path (Syntax.Term ty tm) a ->
+  a ->
+  m (NodeInfo t (Syntax.Term ty tm))
+viewNode isLeaf f dmSelection path tm = do
   rec
-    let eMouseEnter = domEvent Mouseenter e
-    let eMouseLeave = domEvent Mouseleave e
-    let eMouseDown = domEvent Mousedown e
-    let eMouseUp = domEvent Mouseup e
     dThisHovered <-
       holdDyn False $
-      leftmost [True <$ eMouseEnter, False <$ eMouseLeave]
+      leftmost
+      [ True <$ domEvent Mouseenter e
+      , False <$ domEvent Mouseleave e
+      ]
     dHovered <-
       holdUniqDyn $
       (\a b -> a && not b) <$>
       dThisHovered <*>
       _nodeHovered childInfo
+    let
+      gateHovered :: forall a. Event t a -> Event t a
+      gateHovered = gate $ current dHovered
     dMouseHeld <-
-      holdDyn False $
-      gate
-        (current dHovered)
-        (leftmost [True <$ eMouseDown, False <$ eMouseUp])
+      holdDyn False . gateHovered $
+      leftmost [True <$ domEvent Mousedown e, False <$ domEvent Mouseup e]
     let
       dSelected =
-        (\mSelection ->
-           case mSelection of
-             Nothing -> False
-             Just (Selection path') ->
-               case viewl path' of
-                 EmptyL -> True
-                 _ :< _ -> False
-        ) <$>
+        maybe False (\(Selection path') -> Path.isEmpty path') <$>
         dmSelection
     (e, childInfo) <-
       elDynClass'
@@ -306,219 +524,19 @@ viewTerm nameTy name path dmSelection tm = do
             [ Style.selected | selected ] <>
             [ Style.hovered | hovered ] <>
             [ Style.clicking | clicking ] <>
-            (case tm of
-               Syntax.Hole{} -> [ Style.leaf ]
-               Syntax.Var{} -> [ Style.leaf ]
-               _ -> []
-            )
+            [ Style.leaf | isLeaf tm ]
          ) <$>
          dHovered <*>
          dSelected <*>
          dMouseHeld
-        ) $
-      case tm of
-        Syntax.Name n -> do
-          text $ Syntax.unName n
-          pure mempty
-        Syntax.Hole -> do
-          text "_"
-          pure mempty
-        Syntax.Var a -> do
-          text . Syntax.unName $ name a
-          pure mempty
-        Syntax.App a b -> do
-          let
-            parensa =
-              case a of
-                Syntax.Lam{} -> True
-                Syntax.LamAnn{} -> True
-                Syntax.Ann{} -> True
-                _ -> False
-          aInfo <-
-            (if parensa then text "(" else pure ()) *>
-            viewTerm
-              nameTy
-              name
-              (snoc path AppL)
-              (
-               (>>=
-               \(Selection f) -> case viewl f of
-                 AppL :< rest -> Just (Selection rest)
-                 _ -> Nothing
-               ) <$>
-               dmSelection
-              )
-              a <*
-            (if parensa then text ")" else pure ())
-
-          let
-            parensb =
-              case b of
-                Syntax.Lam{} -> True
-                Syntax.LamAnn{} -> True
-                Syntax.App{} -> True
-                Syntax.Ann{} -> True
-                _ -> False
-          bInfo <-
-            (if parensb then text "(" else pure ()) *>
-            viewTerm
-              nameTy
-              name
-              (snoc path AppR)
-              (fmap
-                 (>>=
-                  \(Selection f) -> case viewl f of
-                    AppR :< rest -> Just (Selection rest)
-                    _ -> Nothing
-                 )
-                 dmSelection
-              )
-              b <*
-            (if parensb then text ")" else pure ())
-
-          nodeHovered holdUniqDyn (aInfo <> bInfo)
-        Syntax.Ann a b -> do
-          let
-            parensa =
-              case a of
-                Syntax.Lam{} -> True
-                Syntax.LamAnn{} -> True
-                Syntax.Ann{} -> True
-                _ -> False
-          aInfo <-
-            (if parensa then text "(" else pure ()) *>
-            viewTerm
-              nameTy
-              name
-              (snoc path AnnL)
-              (
-               (>>=
-               \(Selection f) -> case viewl f of
-                 AnnL :< rest -> Just (Selection rest)
-                 _ -> Nothing
-               ) <$>
-               dmSelection
-              )
-              a <*
-            (if parensa then text ")" else pure ())
-
-          text ":"
-
-          let
-            parensb =
-              case b of
-                _ -> False
-          bInfo <-
-            (if parensb then text "(" else pure ()) *>
-            viewType
-              nameTy
-              (snoc path AnnR)
-              (fmap
-                 (>>=
-                  \(Selection f) -> case viewl f of
-                    AnnR :< rest -> Just (Selection rest)
-                    _ -> Nothing
-                 )
-                 dmSelection
-              )
-              b <*
-            (if parensb then text ")" else pure ())
-
-          nodeHovered holdUniqDyn (aInfo <> bInfo)
-        Syntax.Lam n body -> do
-          text "\\"
-          nInfo <-
-            viewName
-              id
-              (Path.snoc path Path.LamArg)
-              (fmap
-                (>>=
-                  \(Selection f) -> case viewl f of
-                    Path.LamArg :< rest -> Just (Selection rest)
-                    _ -> Nothing
-                )
-                dmSelection
-              )
-              n
-          text "->"
-          bodyInfo <-
-            viewTerm
-              nameTy
-              (unvar (\() -> n) name)
-              (snoc path LamBody)
-              (
-               (>>=
-               \(Selection f) ->
-                 case viewl f of
-                   LamBody :< rest -> Just (Selection rest)
-                   _ -> Nothing
-               ) <$>
-               dmSelection
-              )
-              (Bound.fromScope body)
-
-          nodeHovered holdUniqDyn (nInfo <> bodyInfo)
-        Syntax.LamAnn n ty body -> do
-          text "\\"
-          text "("
-          nInfo <-
-            viewName
-              id
-              (Path.snoc path Path.LamAnnArg)
-              (fmap
-                (>>=
-                  \(Selection f) -> case viewl f of
-                    Path.LamAnnArg :< rest -> Just (Selection rest)
-                    _ -> Nothing
-                )
-                dmSelection
-              )
-              n
-          text ":"
-          tyInfo <-
-            viewType
-              nameTy
-              (Path.snoc path LamAnnType)
-              (fmap
-                (>>=
-                  \(Selection f) -> case viewl f of
-                    Path.LamAnnType :< rest -> Just (Selection rest)
-                    _ -> Nothing
-                )
-                dmSelection
-              )
-              ty
-          text ")"
-          text " ->"
-          bodyInfo <-
-            viewTerm
-              nameTy
-              (unvar (\() -> n) name)
-              (snoc path LamAnnBody)
-              (
-               (>>=
-               \(Selection f) ->
-                 case viewl f of
-                   LamAnnBody :< rest -> Just (Selection rest)
-                   _ -> Nothing
-               ) <$>
-               dmSelection
-              )
-              (Bound.fromScope body)
-
-          nodeHovered holdUniqDyn (nInfo <> tyInfo <> bodyInfo)
-  let eClicked = domEvent Click e
-  dHoveredOrChild <-
-    holdUniqDyn $ (||) <$> dThisHovered <*> _nodeHovered childInfo
-  pure $
+        )
+        (f dmSelection path tm)
+  nodeHovered holdUniqDyn $
     NodeInfo
-    { _nodeHovered = dHoveredOrChild
-    , _nodeFocus =
-      leftmost
-      [ Selection path <$ gate (current dHovered) eClicked
-      , _nodeFocus childInfo
-      ]
-    }
+    { _nodeHovered = dThisHovered
+    , _nodeFocus = Selection path <$ gateHovered (domEvent Click e)
+    } <>
+    childInfo
 
 viewHoles ::
   DomBuilder t m =>
