@@ -134,6 +134,27 @@ addHole path nameTy t =
   modify $
   \tc -> tc { _tcHoles = ConsHole path nameTy t (_tcHoles tc) }
 
+data KCEnv a b a' b' where
+  KCEnv ::
+    { _keName :: ty'' -> Name
+    , _keGlobalCtx :: Name -> Maybe Kind
+    , _keCtx :: ty'' -> Maybe Kind
+    , _keTmPath :: Path (Term ty tm) (Term ty' tm'')
+    , _keTyPath :: Path (Type ty') (Type ty'')
+    } ->
+    KCEnv ty tm ty'' tm''
+
+withTmTyPath ::
+  KCEnv ty tm ty' tm' ->
+  (forall x.
+   Path (Term ty tm) (Term x tm') ->
+   Path (Type x) (Type ty') ->
+   r
+  ) ->
+  r
+withTmTyPath (KCEnv { _keTmPath = x, _keTyPath = y }) f = f x y
+
+
 addTHole ::
   MonadState (TCState ty tm) m =>
   KCEnv ty tm ty' tm' ->
@@ -277,26 +298,6 @@ unifyKind expected actual =
         KType -> pure ()
         _ -> throwError $ KindMismatch expected actual
     KMeta n -> solveKMeta n actual
-
-data KCEnv a b a' b' where
-  KCEnv ::
-    { _keName :: ty'' -> Name
-    , _keGlobalCtx :: Name -> Maybe Kind
-    , _keCtx :: ty'' -> Maybe Kind
-    , _keTmPath :: Path (Term ty tm) (Term ty' tm'')
-    , _keTyPath :: Path (Type ty') (Type ty'')
-    } ->
-    KCEnv ty tm ty'' tm''
-
-withTmTyPath ::
-  KCEnv ty tm ty' tm' ->
-  (forall x.
-   Path (Term ty tm) (Term x tm') ->
-   Path (Type x) (Type ty') ->
-   r
-  ) ->
-  r
-withTmTyPath (KCEnv { _keTmPath = x, _keTyPath = y }) f = f x y
 
 checkKind ::
   (MonadState (TCState ty tm) m, MonadError TypeError m) =>
@@ -760,3 +761,45 @@ infer' tcEnv tm =
       outTy' <- applySolutions outTy
       applySolutions_Holes
       pure outTy'
+
+checkDecl ::
+  forall a ty tm tm' m.
+  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
+  Path a Decl ->
+  Decl ->
+  m ()
+checkDecl path (Decl name tyNames ty tm) = do
+  checkKind
+    (KCEnv
+     { _keName = _
+     , _keGlobalCtx = _
+     , _keCtx = _
+     , _keTmPath = _
+     , _keTyPath = _
+     }
+    )
+    ty
+    KType
+  check
+    (TCEnv
+     { _teName = _
+     , _teNameTy = _
+     , _teGlobalCtx = _
+     , _teCtx = _
+     , _teGlobalTyCtx = _
+     , _teTyCtx = _
+     , _teBoundTyVars = _
+     , _tePath = _
+     }
+    )
+    tm
+    ty
+
+checkDecls ::
+  forall a ty tm tm' m.
+  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
+  Path a Decls ->
+  Decls ->
+  m ()
+checkDecls path (Decls ds) =
+  itraverse_ (\i d -> checkDecl (Path.snoc path $ Path.Decl i) d) ds
