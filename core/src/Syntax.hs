@@ -238,6 +238,7 @@ printType nameTy ty =
 data Decl
   = Decl
   { _declName :: Name
+  , _declTypeBindings :: Vector Name
   , _declType :: Type (Bound.Var Int Void)
   , _declTerm :: Term (Bound.Var Int Void) Void
   }

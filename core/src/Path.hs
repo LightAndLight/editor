@@ -213,16 +213,16 @@ matchP p a =
         _ -> Nothing
     DName ->
       case a of
-        Syntax.Decl n ty tm ->
-          Just (n, \n' -> Syntax.Decl n' ty tm)
+        Syntax.Decl n ns ty tm ->
+          Just (n, \n' -> Syntax.Decl n' ns ty tm)
     DType ->
       case a of
-        Syntax.Decl n ty tm ->
-          Just (ty, \ty' -> Syntax.Decl n ty' tm)
+        Syntax.Decl n ns ty tm ->
+          Just (ty, \ty' -> Syntax.Decl n ns ty' tm)
     DTerm ->
       case a of
-        Syntax.Decl n ty tm ->
-          Just (tm, \tm' -> Syntax.Decl n ty tm')
+        Syntax.Decl n ns ty tm ->
+          Just (tm, \tm' -> Syntax.Decl n ns ty tm')
     Decl n ->
       case a of
         Syntax.Decls ds ->

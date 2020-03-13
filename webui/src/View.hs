@@ -11,9 +11,13 @@ module View where
 
 import qualified Bound
 import Bound.Var (unvar)
+import Control.Lens.Indexed (itraverse)
 import Control.Lens.TH (makeLenses)
 import Control.Monad.Fix (MonadFix)
+import Data.Foldable (fold)
 import qualified Data.Text as Text
+import qualified Data.Vector as Vector
+import Data.Void (absurd)
 import Reflex
 import Reflex.Dom
 
@@ -42,6 +46,64 @@ instance Reflex t => Semigroup (NodeInfo t a) where
 instance Reflex t => Monoid (NodeInfo t a) where
   mempty = NodeInfo { _nodeHovered = pure False, _nodeFocus = never }
 
+viewNode ::
+  forall t m a val.
+  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
+  , HasTargetInfo val
+  ) =>
+  (val -> Bool) ->
+  Dynamic t (Maybe (Selection val)) ->
+  Path a val ->
+  (val -> m (NodeInfo t a)) ->
+  val ->
+  m (NodeInfo t a)
+viewNode isLeaf dmSelection path f tm = do
+  rec
+    dThisHovered <-
+      holdDyn False $
+      leftmost
+      [ True <$ domEvent Mouseenter e
+      , False <$ domEvent Mouseleave e
+      ]
+    dHovered <-
+      holdUniqDyn $
+      (\a b -> a && not b) <$>
+      dThisHovered <*>
+      _nodeHovered childInfo
+    let
+      gateHovered :: forall x. Event t x -> Event t x
+      gateHovered = gate $ current dHovered
+    dMouseHeld <-
+      holdDyn False . gateHovered $
+      leftmost [True <$ domEvent Mousedown e, False <$ domEvent Mouseup e]
+    let
+      dSelected =
+        maybe False (\(Selection path') -> Path.isEmpty path') <$>
+        dmSelection
+    (e, childInfo) <-
+      elDynClass'
+        "span"
+        ((\hovered selected clicking ->
+            classes $
+            [ Style.code, Style.focusable, Style.node ] <>
+            [ Style.selected | selected ] <>
+            [ Style.hovered | hovered ] <>
+            [ Style.clicking | clicking ] <>
+            [ Style.leaf | isLeaf tm ]
+         ) <$>
+         dHovered <*>
+         dSelected <*>
+         dMouseHeld
+        )
+        (f tm)
+  nodeHovered holdUniqDyn $
+    NodeInfo
+    { _nodeHovered = dThisHovered
+    , _nodeFocus = Selection path <$ gateHovered (domEvent Click e)
+    } <>
+    childInfo
+
+
 viewName ::
   (MonadHold t m, DomBuilder t m, PostBuild t m, MonadFix m) =>
   HasTargetInfo b =>
@@ -54,7 +116,7 @@ viewName name dmSelection path v =
   viewNode (const True) dmSelection path (\a -> mempty <$ text (Syntax.unName $ name a)) v
 
 viewTypeChildren ::
-  forall t m a ty' tm.
+  forall t m a ty'.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
   (ty' -> Syntax.Name) ->
@@ -392,63 +454,6 @@ viewTerm nameTy name dmSelection path tm =
     (viewTermChildren nameTy name dmSelection path)
     tm
 
-viewNode ::
-  forall t m a val ty tm.
-  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
-  , HasTargetInfo val
-  ) =>
-  (val -> Bool) ->
-  Dynamic t (Maybe (Selection val)) ->
-  Path a val ->
-  (val -> m (NodeInfo t a)) ->
-  val ->
-  m (NodeInfo t a)
-viewNode isLeaf dmSelection path f tm = do
-  rec
-    dThisHovered <-
-      holdDyn False $
-      leftmost
-      [ True <$ domEvent Mouseenter e
-      , False <$ domEvent Mouseleave e
-      ]
-    dHovered <-
-      holdUniqDyn $
-      (\a b -> a && not b) <$>
-      dThisHovered <*>
-      _nodeHovered childInfo
-    let
-      gateHovered :: forall a. Event t a -> Event t a
-      gateHovered = gate $ current dHovered
-    dMouseHeld <-
-      holdDyn False . gateHovered $
-      leftmost [True <$ domEvent Mousedown e, False <$ domEvent Mouseup e]
-    let
-      dSelected =
-        maybe False (\(Selection path') -> Path.isEmpty path') <$>
-        dmSelection
-    (e, childInfo) <-
-      elDynClass'
-        "span"
-        ((\hovered selected clicking ->
-            classes $
-            [ Style.code, Style.focusable, Style.node ] <>
-            [ Style.selected | selected ] <>
-            [ Style.hovered | hovered ] <>
-            [ Style.clicking | clicking ] <>
-            [ Style.leaf | isLeaf tm ]
-         ) <$>
-         dHovered <*>
-         dSelected <*>
-         dMouseHeld
-        )
-        (f tm)
-  nodeHovered holdUniqDyn $
-    NodeInfo
-    { _nodeHovered = dThisHovered
-    , _nodeFocus = Selection path <$ gateHovered (domEvent Click e)
-    } <>
-    childInfo
-
 viewHoles ::
   DomBuilder t m =>
   (ty -> Syntax.Name) ->
@@ -479,18 +484,87 @@ viewDecl ::
   forall t m a.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
-  Path a Syntax.Decl ->
   Dynamic t (Maybe (Selection Syntax.Decl)) ->
+  Path a Syntax.Decl ->
   Syntax.Decl ->
   m (NodeInfo t a)
-viewDecl path dmSelection decls = _
+viewDecl dmSelection path decl = viewNode (const False) dmSelection path viewDeclChildren decl
+  where
+    viewDeclChildren (Syntax.Decl name tyNames ty tm) = do
+      let
+        namePath = Path.snoc path Path.DName
+        nameSelection =
+          (>>=
+          \(Selection f) -> case viewl f of
+            DName :< rest -> Just (Selection rest)
+            _ -> Nothing
+          ) <$>
+          dmSelection
+      sigInfo <-
+        el "div" $ do
+          nInfo <- viewName id nameSelection namePath name
+
+          text ":"
+
+          let tyPath = Path.snoc path Path.DType
+          tyInfo <-
+            viewType
+              (unvar (tyNames Vector.!) absurd)
+              ((>>=
+               \(Selection f) -> case viewl f of
+                DType :< rest -> Just (Selection rest)
+                _ -> Nothing
+               ) <$>
+               dmSelection
+              )
+              tyPath
+              ty
+          nodeHovered holdUniqDyn (nInfo <> tyInfo)
+      bodyInfo <-
+        el "div" $ do
+          nInfo <- viewName id nameSelection namePath name
+
+          text "="
+
+          let tmPath = Path.snoc path Path.DTerm
+          tmInfo <-
+            viewTerm
+              (unvar (tyNames Vector.!) absurd)
+              absurd
+              ((>>=
+               \(Selection f) -> case viewl f of
+                DTerm :< rest -> Just (Selection rest)
+                _ -> Nothing
+               ) <$>
+               dmSelection
+              )
+              tmPath
+              tm
+          nodeHovered holdUniqDyn (nInfo <> tmInfo)
+      nodeHovered holdUniqDyn (sigInfo <> bodyInfo)
 
 viewDecls ::
   forall t m a.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
   ) =>
-  Path a Syntax.Decls ->
   Dynamic t (Maybe (Selection Syntax.Decls)) ->
+  Path a Syntax.Decls ->
   Syntax.Decls ->
   m (NodeInfo t a)
-viewDecls path dmSelection decls = _
+viewDecls dmSelection path (Syntax.Decls ds) = do
+  dInfos <-
+    itraverse
+      (\i ->
+         el "div" .
+         viewDecl
+           ((>>=
+             \(Selection f) -> case viewl f of
+             Path.Decl i' :< rest | i == i' -> Just (Selection rest)
+             _ -> Nothing
+            ) <$>
+             dmSelection
+           )
+           (Path.snoc path $ Path.Decl i)
+      )
+      ds
+  pure $ fold dInfos

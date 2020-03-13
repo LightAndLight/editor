@@ -38,7 +38,7 @@ nextHole = goDown Path.empty []
       case targetInfo @a of
         TargetDecl ->
           case val of
-            Syntax.Decl n ty tm ->
+            Syntax.Decl n _ ty tm ->
               search
                 (Path.snoc prefix Path.DName)
                 (Branch (Path.snoc prefix Path.DType) ty :
@@ -244,7 +244,7 @@ nextHole = goDown Path.empty []
                 _ -> Nothing
             DName ->
               case val of
-                Syntax.Decl val' ty tm ->
+                Syntax.Decl val' _ ty tm ->
                   goDown
                     (Path.snoc prefix p)
                     (Branch (Path.snoc prefix Path.DType) ty :
@@ -255,7 +255,7 @@ nextHole = goDown Path.empty []
                     val'
             DType ->
               case val of
-                Syntax.Decl _ val' tm ->
+                Syntax.Decl _ _ val' tm ->
                   goDown
                     (Path.snoc prefix p)
                     (Branch (Path.snoc prefix Path.DTerm) tm :
@@ -265,7 +265,7 @@ nextHole = goDown Path.empty []
                     val'
             DTerm ->
               case val of
-                Syntax.Decl _ _ val' ->
+                Syntax.Decl _ _ _ val' ->
                   goDown
                     (Path.snoc prefix p)
                     bs
@@ -308,7 +308,7 @@ prevHole = goDown Path.empty []
       case targetInfo @a of
         TargetDecl ->
           case val of
-            Syntax.Decl n ty tm ->
+            Syntax.Decl n _ ty tm ->
               search
                 (Path.snoc prefix Path.DTerm)
                 (Branch (Path.snoc prefix Path.DName) n :
@@ -520,7 +520,7 @@ prevHole = goDown Path.empty []
                 _ -> Nothing
             DName ->
               case val of
-                Syntax.Decl val' _ _ ->
+                Syntax.Decl val' _ _ _ ->
                   goDown
                     (Path.snoc prefix p)
                     bs
@@ -528,7 +528,7 @@ prevHole = goDown Path.empty []
                     val'
             DType ->
               case val of
-                Syntax.Decl n val' _ ->
+                Syntax.Decl n _ val' _ ->
                   goDown
                     (Path.snoc prefix p)
                     (Branch (Path.snoc prefix Path.DName) n :
@@ -538,7 +538,7 @@ prevHole = goDown Path.empty []
                     val'
             DTerm ->
               case val of
-                Syntax.Decl n ty val' ->
+                Syntax.Decl n _ ty val' ->
                   goDown
                     (Path.snoc prefix p)
                     (Branch (Path.snoc prefix Path.DType) ty :
