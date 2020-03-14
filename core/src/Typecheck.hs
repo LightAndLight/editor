@@ -1,12 +1,13 @@
 {-# language FlexibleContexts #-}
 {-# language GADTs, StandaloneDeriving #-}
+{-# language LambdaCase #-}
 {-# language RankNTypes #-}
 {-# language ScopedTypeVariables, TypeApplications #-}
 module Typecheck where
 
 import qualified Bound
 import Bound.Var (unvar)
-import Control.Lens.Indexed (itraverse_)
+import Control.Lens.Indexed (ifoldr, itraverse_)
 import Control.Monad (when)
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad.State (MonadState, gets, modify)
@@ -42,55 +43,65 @@ substKMeta_Entry :: (KMeta, Kind) -> Entry -> Entry
 substKMeta_Entry s (TEntry n k) = TEntry n $ substKMeta s k
 substKMeta_Entry _ (KEntry n) = KEntry n
 
-data Holes ty tm where
+data Holes a where
   ConsHole ::
-    Path (Term ty tm) (Term ty' tm') ->
+    Path a (Term ty' tm') ->
     (ty' -> Name) ->
     Type ty' ->
-    Holes ty tm ->
-    Holes ty tm
-  ConsTHole ::
-    Path (Term ty tm) (Term ty' tm') ->
+    Holes a ->
+    Holes a
+  ConsTHoleTerm ::
+    Path a (Term ty' tm') ->
     Path (Type ty') (Type ty'') ->
     Kind ->
-    Holes ty tm ->
-    Holes ty tm
-  Nil :: Holes ty tm
+    Holes a ->
+    Holes a
+  ConsTHoleType ::
+    Path a (Type ty'') ->
+    Kind ->
+    Holes a ->
+    Holes a
+  Nil :: Holes a
 
-substTMetas_Holes :: Map TMeta (Type Void) -> Holes ty tm -> Holes ty tm
+substTMetas_Holes :: Map TMeta (Type Void) -> Holes a -> Holes a
 substTMetas_Holes s hs =
   case hs of
     Nil -> Nil
     ConsHole p ns ty rest ->
       ConsHole p ns (substTMetas s ty) $ substTMetas_Holes s rest
-    ConsTHole p1 p2 k rest ->
-      ConsTHole p1 p2 k $ substTMetas_Holes s rest
+    ConsTHoleTerm p1 p2 k rest ->
+      ConsTHoleTerm p1 p2 k $ substTMetas_Holes s rest
+    ConsTHoleType p1 k rest ->
+      ConsTHoleType p1 k $ substTMetas_Holes s rest
 
-substKMetas_Holes :: Map KMeta Kind -> Holes ty tm -> Holes ty tm
+substKMetas_Holes :: Map KMeta Kind -> Holes a -> Holes a
 substKMetas_Holes s hs =
   case hs of
     Nil -> Nil
     ConsHole p ns ty rest ->
       ConsHole p ns ty $ substKMetas_Holes s rest
-    ConsTHole p1 p2 k rest ->
-      ConsTHole p1 p2 (substKMetas s k) $ substKMetas_Holes s rest
+    ConsTHoleTerm p1 p2 k rest ->
+      ConsTHoleTerm p1 p2 (substKMetas s k) $ substKMetas_Holes s rest
+    ConsTHoleType p1 k rest ->
+      ConsTHoleType p1 (substKMetas s k) $ substKMetas_Holes s rest
 
 data Info a where
   TermInfo :: (ty -> Name) -> Type ty -> Info (Term ty tm)
   TypeInfo :: Kind -> Info (Type ty)
 
-data TCState ty tm
+data TCState a
   = TCState
   { _tcTypeSupply :: Int
   , _tcKindSupply :: Int
   , _tcEntries :: Seq Entry
   , _tcSubst :: Map TMeta (Type Void)
   , _tcKindSubst :: Map KMeta Kind
-  , _tcHoles :: Holes ty tm
-  , _tcInfo :: Path.Map.Map (Term ty tm) Info
+  , _tcHoles :: Holes a
+  , _tcInfo :: Path.Map.Map a Info
+  , _tcCheckedDecls :: Map Name Decl
   }
 
-emptyTCState :: TCState ty tm
+emptyTCState :: TCState a
 emptyTCState =
   TCState
   { _tcTypeSupply = 0
@@ -100,33 +111,34 @@ emptyTCState =
   , _tcKindSubst = mempty
   , _tcHoles = Nil
   , _tcInfo = Path.Map.empty
+  , _tcCheckedDecls = mempty
   }
 
 addInfo ::
-  MonadState (TCState ty tm) m =>
-  Path (Term ty tm) b ->
+  MonadState (TCState a) m =>
+  Path a b ->
   Info b ->
   m ()
 addInfo p i =
   modify $ \tc -> tc { _tcInfo = Path.Map.insert p i $ _tcInfo tc }
 
 applySolutions_Holes ::
-  MonadState (TCState ty tm) m =>
+  MonadState (TCState a) m =>
   m ()
 applySolutions_Holes = do
   substs <- gets _tcSubst
   modify $ \tc -> tc { _tcHoles = substTMetas_Holes substs (_tcHoles tc) }
 
 applySolutions_THoles ::
-  MonadState (TCState ty tm) m =>
+  MonadState (TCState a) m =>
   m ()
 applySolutions_THoles = do
   substs <- gets _tcKindSubst
   modify $ \tc -> tc { _tcHoles = substKMetas_Holes substs (_tcHoles tc) }
 
 addHole ::
-  MonadState (TCState ty tm) m =>
-  Path (Term ty tm) (Term ty' tm') ->
+  MonadState (TCState a) m =>
+  Path a (Term ty' tm') ->
   (ty' -> Name) ->
   Type ty' ->
   m ()
@@ -134,40 +146,75 @@ addHole path nameTy t =
   modify $
   \tc -> tc { _tcHoles = ConsHole path nameTy t (_tcHoles tc) }
 
-data KCEnv a b a' b' where
-  KCEnv ::
+data KCEnv a a' b' where
+  KCEnvTerm ::
     { _keName :: ty'' -> Name
     , _keGlobalCtx :: Name -> Maybe Kind
     , _keCtx :: ty'' -> Maybe Kind
-    , _keTmPath :: Path (Term ty tm) (Term ty' tm'')
-    , _keTyPath :: Path (Type ty') (Type ty'')
+    , _keTmPath :: Path a (Term ty' tm'')
+    , _keTermTyPath :: Path (Type ty') (Type ty'')
     } ->
-    KCEnv ty tm ty'' tm''
+    KCEnv a ty'' tm''
+  KCEnvType ::
+    { _keName :: ty'' -> Name
+    , _keGlobalCtx :: Name -> Maybe Kind
+    , _keCtx :: ty'' -> Maybe Kind
+    , _keTypeTyPath :: Path a (Type ty'')
+    } ->
+    KCEnv a ty'' tm''
 
-withTmTyPath ::
-  KCEnv ty tm ty' tm' ->
-  (forall x.
-   Path (Term ty tm) (Term x tm') ->
-   Path (Type x) (Type ty') ->
-   r
-  ) ->
-  r
-withTmTyPath (KCEnv { _keTmPath = x, _keTyPath = y }) f = f x y
-
+updateKCEnv ::
+  ((ty -> Name) -> (ty' -> Name)) ->
+  ((ty -> Maybe Kind) -> (ty' -> Maybe Kind)) ->
+  (forall x. Path x (Type ty) -> Path x (Type ty')) ->
+  KCEnv a ty tm ->
+  KCEnv a ty' tm
+updateKCEnv fName fCtx fPath ke =
+  case ke of
+    KCEnvTerm
+      { _keName = name
+      , _keGlobalCtx = ctxG
+      , _keCtx = ctx
+      , _keTmPath = tmPath
+      , _keTermTyPath = tyPath
+      } ->
+        KCEnvTerm
+        { _keName = fName name
+        , _keGlobalCtx = ctxG
+        , _keCtx = fCtx ctx
+        , _keTmPath = tmPath
+        , _keTermTyPath = fPath tyPath
+        }
+    KCEnvType
+      { _keName = name
+      , _keGlobalCtx = ctxG
+      , _keCtx = ctx
+      , _keTypeTyPath = tyPath
+      } ->
+        KCEnvType
+        { _keName = fName name
+        , _keGlobalCtx = ctxG
+        , _keCtx = fCtx ctx
+        , _keTypeTyPath = fPath tyPath
+        }
 
 addTHole ::
-  MonadState (TCState ty tm) m =>
-  KCEnv ty tm ty' tm' ->
+  MonadState (TCState a) m =>
+  KCEnv a ty' tm' ->
   Kind ->
   m ()
-addTHole (KCEnv { _keTmPath = path1, _keTyPath = path2 }) t =
+addTHole (KCEnvTerm { _keTmPath = path1, _keTermTyPath = path2 }) t =
   modify $
-  \tc -> tc { _tcHoles = ConsTHole path1 path2 t (_tcHoles tc) }
+  \tc -> tc { _tcHoles = ConsTHoleTerm path1 path2 t (_tcHoles tc) }
+addTHole (KCEnvType { _keTypeTyPath = path2 }) t =
+  modify $
+  \tc -> tc { _tcHoles = ConsTHoleType path2 t (_tcHoles tc) }
 
-appendHoles :: Holes ty tm -> Holes ty tm -> Holes ty tm
+appendHoles :: Holes a -> Holes a -> Holes a
 appendHoles Nil hs = hs
 appendHoles (ConsHole p ns ty rest) hs = ConsHole p ns ty $ appendHoles rest hs
-appendHoles (ConsTHole p1 p2 k rest) hs = ConsTHole p1 p2 k $ appendHoles rest hs
+appendHoles (ConsTHoleTerm p1 p2 k rest) hs = ConsTHoleTerm p1 p2 k $ appendHoles rest hs
+appendHoles (ConsTHoleType p1 k rest) hs = ConsTHoleType p1 k $ appendHoles rest hs
 
 data TypeError
   = NotInScope Name
@@ -183,7 +230,7 @@ data TypeError
   deriving Show
 
 freshTMeta ::
-  MonadState (TCState ty tm) m =>
+  MonadState (TCState a) m =>
   Seq (Name, Type ty', Kind) ->
   Kind ->
   m (Type ty')
@@ -208,7 +255,7 @@ freshTMeta boundTyVars k = do
       (TMeta m)
       ((\(_, a, _) -> a) <$> bs)
 
-freshKMeta :: MonadState (TCState ty tm) m => m KMeta
+freshKMeta :: MonadState (TCState a) m => m KMeta
 freshKMeta = do
   n <- gets _tcKindSupply
   let m = KM n
@@ -221,7 +268,7 @@ freshKMeta = do
   pure m
 
 lookupTMeta ::
-  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
+  (MonadState (TCState a) m, MonadError TypeError m) =>
   TMeta ->
   m Kind
 lookupTMeta t = do
@@ -238,7 +285,7 @@ lookupTMeta t = do
   maybe (throwError $ TMetaNotInScope t) pure m_entry
 
 solveKMeta ::
-  MonadState (TCState ty tm) m =>
+  MonadState (TCState a) m =>
   KMeta ->
   Kind ->
   m ()
@@ -270,7 +317,7 @@ solveKMeta n' k' = do
             else go prefix' suffix (entry Seq.<| sig) n k
 
 unifyKind ::
-  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
+  (MonadState (TCState a) m, MonadError TypeError m) =>
   Kind ->
   Kind ->
   m ()
@@ -300,8 +347,8 @@ unifyKind expected actual =
     KMeta n -> solveKMeta n actual
 
 checkKind ::
-  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  KCEnv ty tm ty' tm' ->
+  (MonadState (TCState a) m, MonadError TypeError m) =>
+  KCEnv a ty' tm' ->
   Type ty' ->
   Kind ->
   m ()
@@ -311,8 +358,8 @@ checkKind kindEnv ty ki = do
   applySolutions_THoles
 
 inferKind ::
-  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  KCEnv ty tm ty' tm' ->
+  (MonadState (TCState a) m, MonadError TypeError m) =>
+  KCEnv a ty' tm' ->
   Type ty' ->
   m Kind
 inferKind kindEnv ty =
@@ -328,67 +375,38 @@ inferKind kindEnv ty =
       maybe (throwError $ NotInScope a) pure (_keGlobalCtx kindEnv a)
     TForall n body -> do
       k <- KMeta <$> freshKMeta
-      withTmTyPath kindEnv $ \tmPath tyPath ->
-        inferKind
-          (KCEnv
-          { _keName = unvar (\() -> n) (_keName kindEnv)
-          , _keGlobalCtx = _keGlobalCtx kindEnv
-          , _keCtx = unvar (\() -> Just k) (_keCtx kindEnv)
-          , _keTmPath = tmPath
-          , _keTyPath = Path.snoc tyPath Path.TForallBody
-          }
-          )
-          (Bound.fromScope body)
+      inferKind
+        (updateKCEnv
+          (\name -> unvar (\() -> n) name)
+          (\ctx -> unvar (\() -> Just k) ctx)
+          (\tyPath -> Path.snoc tyPath Path.TForallBody)
+          kindEnv
+        )
+        (Bound.fromScope body)
     TArr a b -> do
-      withTmTyPath kindEnv $ \tmPath tyPath -> do
-        checkKind
-          (KCEnv
-           { _keName = _keName kindEnv
-           , _keGlobalCtx = _keGlobalCtx kindEnv
-           , _keCtx = _keCtx kindEnv
-           , _keTmPath = tmPath
-           , _keTyPath = Path.snoc tyPath Path.TArrL
-           }
-          )
-          a
-          KType
-        checkKind
-          (KCEnv
-           { _keName = _keName kindEnv
-           , _keGlobalCtx = _keGlobalCtx kindEnv
-           , _keCtx = _keCtx kindEnv
-           , _keTmPath = tmPath
-           , _keTyPath = Path.snoc tyPath Path.TArrR
-           }
-          )
-          b
-          KType
+      checkKind
+        (updateKCEnv id id (\tyPath -> Path.snoc tyPath Path.TArrL) kindEnv)
+        a
+        KType
+      checkKind
+        (updateKCEnv id id (\tyPath -> Path.snoc tyPath Path.TArrR) kindEnv)
+        b
+        KType
       pure KType
     TUnsolved ns body ->
-      withTmTyPath kindEnv $ \tmPath tyPath ->
-        KUnsolved ns <$>
-        inferKind
-          (KCEnv
-          { _keName = unvar (fst . (ns Vector.!)) absurd
-          , _keGlobalCtx = _keGlobalCtx kindEnv
-          , _keCtx = unvar (Just . snd . (ns Vector.!)) absurd
-          , _keTmPath = tmPath
-          , _keTyPath = Path.snoc tyPath Path.TUnsolvedBody
-          }
-          )
-          (Bound.fromScope body)
+      KUnsolved ns <$>
+      inferKind
+        (updateKCEnv
+          (\_ -> unvar (fst . (ns Vector.!)) absurd)
+          (\_ -> unvar (Just . snd . (ns Vector.!)) absurd)
+          (\tyPath -> Path.snoc tyPath Path.TUnsolvedBody)
+          kindEnv
+        )
+        (Bound.fromScope body)
     TSubst a bs -> do
       aKind <-
-        withTmTyPath kindEnv $ \tmPath tyPath ->
         inferKind
-          (KCEnv
-           { _keName = _keName kindEnv
-           , _keGlobalCtx = _keGlobalCtx kindEnv
-           , _keCtx = _keCtx kindEnv
-           , _keTmPath = tmPath
-           , _keTyPath = Path.snoc tyPath Path.TSubstL
-           }
-          )
+          (updateKCEnv id id (\tyPath -> Path.snoc tyPath Path.TSubstL) kindEnv)
           a
       case aKind of
         KUnsolved ns bodyKind ->
@@ -401,16 +419,8 @@ inferKind kindEnv ty =
               bodyKind <$
               itraverse_
                 (\i (x, y) ->
-                   withTmTyPath kindEnv $ \tmPath tyPath ->
                    checkKind
-                     (KCEnv
-                      { _keName = _keName kindEnv
-                      , _keGlobalCtx = _keGlobalCtx kindEnv
-                      , _keCtx = _keCtx kindEnv
-                      , _keTmPath = tmPath
-                      , _keTyPath = Path.snoc tyPath $ Path.TSubstR i
-                      }
-                     )
+                     (updateKCEnv id id (\tyPath -> Path.snoc tyPath $ Path.TSubstR i) kindEnv)
                      x
                      (snd y)
                 )
@@ -419,8 +429,8 @@ inferKind kindEnv ty =
         _ -> throwError $ ExpectedKUnsolved aKind
 
 solveTMeta ::
-  (MonadError TypeError m, MonadState (TCState ty tm) m) =>
-  KCEnv ty tm ty' tm' ->
+  (MonadError TypeError m, MonadState (TCState a) m) =>
+  KCEnv a ty' tm' ->
   TMeta ->
   Type Void ->
   m ()
@@ -445,7 +455,7 @@ solveTMeta kindEnv n' t' = do
           | otherwise ->
             go prefix' suffix (entry Seq.<| sig) n t
 
-applySolutions :: MonadState (TCState ty tm) m => Type ty' -> m (Type ty')
+applySolutions :: MonadState (TCState a) m => Type ty' -> m (Type ty')
 applySolutions ty = do
   subst <- gets _tcSubst
   pure $ substTMetas subst ty
@@ -460,9 +470,9 @@ typeMismatch nameTy expected actual =
   throwError $ TypeMismatch (nameTy <$> expected) (nameTy <$> actual)
 
 inversion ::
-  ( MonadState (TCState ty tm) m, MonadError TypeError m
+  ( MonadState (TCState a) m, MonadError TypeError m
   ) =>
-  KCEnv ty tm ty' tm' ->
+  KCEnv a ty' tm' ->
   TMeta ->
   Vector (Type ty') ->
   Type ty' ->
@@ -477,16 +487,8 @@ inversion kindEnv n bs ty = do
       when (lbs /= lns) . throwError $ ArityMismatch lns lbs
       itraverse_
         (\i (nn, b) ->
-           withTmTyPath kindEnv $ \tmPath tyPath ->
            checkKind
-             (KCEnv
-              { _keName = _keName kindEnv
-              , _keGlobalCtx = _keGlobalCtx kindEnv
-              , _keCtx = _keCtx kindEnv
-              , _keTmPath = tmPath
-              , _keTyPath = Path.snoc tyPath $ Path.TSubstR i
-              }
-             )
+             (updateKCEnv id id (\tyPath -> Path.snoc tyPath $ Path.TSubstR i) kindEnv)
              b
              (snd nn)
         )
@@ -508,9 +510,9 @@ inversion kindEnv n bs ty = do
     _ -> undefined
 
 inversion0 ::
-  ( MonadState (TCState ty tm) m, MonadError TypeError m
+  ( MonadState (TCState a) m, MonadError TypeError m
   ) =>
-  KCEnv ty tm ty' tm' ->
+  KCEnv a ty' tm' ->
   TMeta ->
   Type ty' ->
   m ()
@@ -520,10 +522,10 @@ inversion0 kindEnv n ty = do
     Just ty' -> solveTMeta kindEnv n ty'
 
 unifyType ::
-  ( MonadState (TCState ty tm) m, MonadError TypeError m
+  ( MonadState (TCState a) m, MonadError TypeError m
   , Eq ty'
   ) =>
-  KCEnv ty tm ty' tm' ->
+  KCEnv a ty' tm' ->
   Type ty' ->
   Type ty' ->
   m ()
@@ -550,48 +552,30 @@ unifyType kindEnv expected actual =
       case runSubst actual of
         TForall n' body' -> do
           k <- KMeta <$> freshKMeta
-          withTmTyPath kindEnv $ \tmPath tyPath ->
-            unifyType
-              (KCEnv
-               { _keName = unvar (\() -> n') (_keName kindEnv)
-               , _keGlobalCtx = _keGlobalCtx kindEnv
-               , _keCtx = unvar (\() -> Just k) (_keCtx kindEnv)
-               , _keTmPath = tmPath
-               , _keTyPath = Path.snoc tyPath Path.TForallBody
-               }
-              )
-              (Bound.fromScope body)
-              (Bound.fromScope body')
+          unifyType
+            (updateKCEnv
+                (\name -> unvar (\() -> n') name)
+                (\ctx -> unvar (\() -> Just k) ctx)
+                (\tyPath -> Path.snoc tyPath Path.TForallBody)
+                kindEnv
+            )
+            (Bound.fromScope body)
+            (Bound.fromScope body')
         TSubst (TMeta n) bs -> inversion kindEnv n bs expected
         TMeta n -> inversion0 kindEnv n expected
         THole -> pure ()
         _ -> typeMismatch (_keName kindEnv) expected actual
     TArr a b ->
       case runSubst actual of
-        TArr a' b' ->
-          withTmTyPath kindEnv $ \tmPath tyPath -> do
-            unifyType
-              (KCEnv
-                { _keName = _keName kindEnv
-                , _keGlobalCtx = _keGlobalCtx kindEnv
-                , _keCtx = _keCtx kindEnv
-                , _keTmPath = tmPath
-                , _keTyPath = Path.snoc tyPath Path.TArrL
-                }
-              )
-              a
-              a'
-            unifyType
-              (KCEnv
-                { _keName = _keName kindEnv
-                , _keGlobalCtx = _keGlobalCtx kindEnv
-                , _keCtx = _keCtx kindEnv
-                , _keTmPath = tmPath
-                , _keTyPath = Path.snoc tyPath Path.TArrR
-                }
-              )
-              b
-              b'
+        TArr a' b' -> do
+          unifyType
+            (updateKCEnv id id (\tyPath -> Path.snoc tyPath Path.TArrL) kindEnv)
+            a
+            a'
+          unifyType
+            (updateKCEnv id id (\tyPath -> Path.snoc tyPath Path.TArrR) kindEnv)
+            b
+            b'
         TSubst (TMeta n) bs -> inversion kindEnv n bs expected
         TMeta n -> inversion0 kindEnv n expected
         THole -> pure ()
@@ -608,25 +592,22 @@ unifyType kindEnv expected actual =
                else typeMismatch (_keName kindEnv) expected actual
             )
             (Vector.zip ns ns')
-          withTmTyPath kindEnv $ \tmPath tyPath ->
-            unifyType
-              (KCEnv
-               { _keName = unvar (fst . (ns' Vector.!)) absurd
-               , _keGlobalCtx = _keGlobalCtx kindEnv
-               , _keCtx = unvar (Just . snd . (ns' Vector.!)) absurd
-               , _keTmPath = tmPath
-               , _keTyPath = Path.snoc tyPath Path.TUnsolvedBody
-               }
-              )
-              (Bound.fromScope body)
-              (Bound.fromScope body')
+          unifyType
+            (updateKCEnv
+              (\_ -> unvar (fst . (ns' Vector.!)) absurd)
+              (\_ -> unvar (Just . snd . (ns' Vector.!)) absurd)
+              (\tyPath -> Path.snoc tyPath Path.TUnsolvedBody)
+              kindEnv
+            )
+            (Bound.fromScope body)
+            (Bound.fromScope body')
         TSubst (TMeta n) bs -> inversion kindEnv n bs expected
         TMeta n -> inversion0 kindEnv n expected
         THole -> pure ()
         _ -> typeMismatch (_keName kindEnv) expected actual
     TSubst{} -> undefined
 
-data TCEnv ty tm ty' tm'
+data TCEnv a ty' tm'
   = TCEnv
   { _teName :: tm' -> Name
   , _teNameTy :: ty' -> Name
@@ -635,33 +616,33 @@ data TCEnv ty tm ty' tm'
   , _teGlobalTyCtx :: Name -> Maybe Kind
   , _teTyCtx :: ty' -> Maybe Kind
   , _teBoundTyVars :: Seq (Name, Type ty', Kind)
-  , _tePath :: Path (Term ty tm) (Term ty' tm')
+  , _tePath :: Path a (Term ty' tm')
   }
 
 check ::
-  (Eq ty', MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  TCEnv ty tm ty' tm' ->
+  (Eq ty', MonadState (TCState a) m, MonadError TypeError m) =>
+  TCEnv a ty' tm' ->
   Term ty' tm' ->
   Type ty' ->
   m ()
 check tcEnv tm ty = do
   ty' <- infer tcEnv tm
   unifyType
-    (KCEnv
+    (KCEnvTerm
      { _keName = _teNameTy tcEnv
      , _keGlobalCtx = _teGlobalTyCtx tcEnv
      , _keCtx = _teTyCtx tcEnv
      , _keTmPath = _tePath tcEnv
-     , _keTyPath = Path.empty
+     , _keTermTyPath = Path.empty
      })
     ty
     ty'
   applySolutions_Holes
 
 infer ::
-  forall ty tm ty' tm' m.
-  (Eq ty', MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  TCEnv ty tm ty' tm' ->
+  forall a ty' tm' m.
+  (Eq ty', MonadState (TCState a) m, MonadError TypeError m) =>
+  TCEnv a ty' tm' ->
   Term ty' tm' ->
   m (Type ty')
 infer tcEnv tm = do
@@ -670,21 +651,20 @@ infer tcEnv tm = do
   pure ty
 
 infer' ::
-  forall ty tm ty' tm' m.
-  (Eq ty', MonadState (TCState ty tm) m, MonadError TypeError m) =>
-  TCEnv ty tm ty' tm' ->
+  forall a ty' tm' m.
+  (Eq ty', MonadState (TCState a) m, MonadError TypeError m) =>
+  TCEnv a ty' tm' ->
   Term ty' tm' ->
   m (Type ty')
 infer' tcEnv tm =
   case tm of
     Ann a t -> do
       checkKind
-        (KCEnv
+        (KCEnvType
           { _keName = _teNameTy tcEnv
           , _keGlobalCtx = _teGlobalTyCtx tcEnv
           , _keCtx = _teTyCtx tcEnv
-          , _keTmPath = _tePath tcEnv
-          , _keTyPath = Path.empty
+          , _keTypeTyPath = Path.snoc (_tePath tcEnv) Path.AnnR
           }
         )
         t
@@ -705,12 +685,11 @@ infer' tcEnv tm =
     LamAnn n ty body -> do
       let tyPath = Path.snoc (_tePath tcEnv) Path.LamAnnType
       checkKind
-        (KCEnv
+        (KCEnvType
           { _keName = _teNameTy tcEnv
           , _keGlobalCtx = _teGlobalTyCtx tcEnv
           , _keCtx = _teTyCtx tcEnv
-          , _keTmPath = _tePath tcEnv
-          , _keTyPath = Path.empty
+          , _keTypeTyPath = Path.snoc (_tePath tcEnv) Path.LamAnnType
           }
         )
         ty
@@ -747,12 +726,12 @@ infer' tcEnv tm =
       inTy <- freshTMeta (_teBoundTyVars tcEnv) KType
       outTy <- freshTMeta (_teBoundTyVars tcEnv) KType
       unifyType
-        (KCEnv
+        (KCEnvTerm
          { _keName = _teNameTy tcEnv
          , _keGlobalCtx = _teGlobalTyCtx tcEnv
          , _keCtx = _teTyCtx tcEnv
          , _keTmPath = fPath
-         , _keTyPath = Path.empty
+         , _keTermTyPath = Path.empty
          })
         (TArr inTy outTy)
         fTy
@@ -763,43 +742,64 @@ infer' tcEnv tm =
       pure outTy'
 
 checkDecl ::
-  forall a ty tm tm' m.
-  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
+  forall a m.
+  (MonadState (TCState a) m, MonadError TypeError m) =>
+  (Name -> Maybe (Type Void)) ->
+  (Name -> Maybe Kind) ->
   Path a Decl ->
   Decl ->
-  m ()
-checkDecl path (Decl name tyNames ty tm) = do
+  m (Name, Decl)
+checkDecl ctxG tyCtxG path d@(Decl name tyNames ty tm) = do
+  kmetas <- traverse (\_ -> KMeta <$> freshKMeta) tyNames
+  let tyPath = Path.snoc path Path.DType
   checkKind
-    (KCEnv
-     { _keName = _
-     , _keGlobalCtx = _
-     , _keCtx = _
-     , _keTmPath = _
-     , _keTyPath = _
+    (KCEnvType
+     { _keName = unvar (tyNames Vector.!) absurd
+     , _keGlobalCtx = tyCtxG
+     , _keCtx = unvar (Just . (kmetas Vector.!)) absurd
+     , _keTypeTyPath = tyPath
      }
     )
     ty
     KType
+  addInfo tyPath $ TypeInfo KType
+  kmetas' <- do
+    subs <- gets _tcKindSubst
+    pure $ Syntax.substKMetas subs <$> kmetas
   check
     (TCEnv
-     { _teName = _
-     , _teNameTy = _
-     , _teGlobalCtx = _
-     , _teCtx = _
-     , _teGlobalTyCtx = _
-     , _teTyCtx = _
-     , _teBoundTyVars = _
-     , _tePath = _
+     { _teName = absurd
+     , _teNameTy = unvar (tyNames Vector.!) absurd
+     , _teGlobalCtx = (fmap.fmap) Bound.F . ctxG
+     , _teCtx = absurd
+     , _teGlobalTyCtx = tyCtxG
+     , _teTyCtx = unvar (Just . (kmetas Vector.!)) absurd
+     , _teBoundTyVars =
+       ifoldr
+         (\i (t, k) -> (Seq.<|) (t, Syntax.TVar (Bound.B i), k))
+         mempty
+         (Vector.zip tyNames kmetas')
+     , _tePath = Path.snoc path Path.DTerm
      }
     )
     tm
     ty
+  pure (name, d)
 
 checkDecls ::
-  forall a ty tm tm' m.
-  (MonadState (TCState ty tm) m, MonadError TypeError m) =>
+  forall a m.
+  (MonadState (TCState a) m, MonadError TypeError m) =>
+  (Name -> Maybe (Type Void)) ->
+  (Name -> Maybe Kind) ->
   Path a Decls ->
   Decls ->
   m ()
-checkDecls path (Decls ds) =
-  itraverse_ (\i d -> checkDecl (Path.snoc path $ Path.Decl i) d) ds
+checkDecls ctxG tyCtxG path (Decls ds) =
+  ifoldr
+    (\i d rest -> do
+      (dname, d') <- checkDecl ctxG tyCtxG (Path.snoc path $ Path.Decl i) d
+      modify $ \tc -> tc { _tcCheckedDecls = Map.insert dname d' $ _tcCheckedDecls tc }
+      rest
+    )
+    (pure ())
+    ds

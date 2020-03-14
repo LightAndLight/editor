@@ -41,7 +41,6 @@ import qualified Zipper
 
 import Input (Inputs(..), getInputs)
 import qualified Style
-import View (viewTerm)
 import qualified View
 
 menuInput ::
@@ -158,6 +157,13 @@ menuItems eNextItem dInputText path = do
       ]
     dItems <-
       case targetInfo @b of
+        TargetDecls -> error "todo: menu for decls"
+        TargetDecl ->
+          pure $
+          constDyn
+          [ Other "insert decl below"
+          , Other "insert decl above"
+          ]
         TargetTerm ->
           pure $
             (\n ->
@@ -330,6 +336,8 @@ runAction action es =
               }
     Annotate (path :: Path a x) ->
       case targetInfo @x of
+        TargetDecl -> es
+        TargetDecls -> es
         TargetType -> error "todo: annotate type"
         TargetTerm ->
           case Edit.edit path targetInfo (Edit.ModifyTerm (`Syntax.Ann` Syntax.THole) $ Path.singleton Path.AnnR) (_esContent es) of
@@ -344,7 +352,7 @@ runAction action es =
             EmptyR -> es
             ps :> p ->
               case p of
-                Path.DName -> error "todo: annotate DName"
+                Path.DName -> es { _esSelection = Focus.Selection $ Path.snoc ps Path.DType }
                 Path.TForallArg -> error "todo: annotate TForallArg"
                 Path.LamAnnArg->
                   case Zipper.downTo ps $ Zipper.toZipper (_esContent es) of
@@ -495,7 +503,7 @@ app =
                  Path.singleton (Path.Decl 0)
                , _esContent =
                  Syntax.Decls
-                 [ Syntax.Decl (Syntax.N "val") Syntax.THole Syntax.Hole
+                 [ Syntax.Decl (Syntax.N "val") mempty Syntax.THole Syntax.Hole
                  ]
                }
               )
@@ -509,7 +517,7 @@ app =
             fmap switchDyn $
             bindDynamicM
               (fmap View._nodeFocus .
-               viewDecls (Just <$> dSelection)
+               View.viewDecls (Just <$> dSelection) Path.empty
               )
               dTerm
           let
@@ -522,6 +530,8 @@ app =
                       case targetInfo @x of
                         TargetTerm -> Just [DeleteTerm path]
                         TargetType -> Just [DeleteType path]
+                        TargetDecl -> Nothing
+                        TargetDecls -> Nothing
                         TargetName -> Nothing
                 )
                 ((,) <$> current dMenuOpen <*> current dSelection)
@@ -537,22 +547,14 @@ app =
         Dynamic t
           (Either
              Typecheck.TypeError
-             (Type Name, Typecheck.TCState Name Name)
+             ((), Typecheck.TCState Decls)
           )
       dTcRes =
         flip runStateT Typecheck.emptyTCState .
-        Typecheck.infer
-          (Typecheck.TCEnv
-           { Typecheck._teName = id
-           , Typecheck._teNameTy = id
-           , Typecheck._teGlobalCtx = const Nothing
-           , Typecheck._teCtx = const Nothing
-           , Typecheck._teGlobalTyCtx = const Nothing
-           , Typecheck._teTyCtx = const Nothing
-           , Typecheck._teBoundTyVars = mempty
-           , Typecheck._tePath = Path.empty
-           }
-          ) <$>
+        Typecheck.checkDecls
+          (const Nothing)
+          (const Nothing)
+          Path.empty <$>
         dTerm
 
       dSelectionInfo :: Dynamic t (m ())
@@ -589,6 +591,10 @@ app =
                    infoItem "Kind" ki
              TargetName -> do
                infoItem "Form" "name"
+             TargetDecl -> do
+               infoItem "Form" "declaration"
+             TargetDecls -> do
+               infoItem "Form" "declarations"
         ) <$>
         dSelection <*>
         dTcRes

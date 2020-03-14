@@ -34,7 +34,7 @@ newtype KMeta = KM Int
   deriving (Eq, Ord, Show)
 
 newtype Name = N { unName :: Text }
-  deriving (Eq, Show, IsString)
+  deriving (Eq, Ord, Show, IsString)
 
 data Kind
   = KUnsolved (Vector (Name, Kind)) Kind

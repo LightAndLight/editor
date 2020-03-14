@@ -430,6 +430,7 @@ data TargetInfo b where
   TargetTerm :: TargetInfo (Term ty v)
   TargetType :: TargetInfo (Type v)
   TargetDecl :: TargetInfo Decl
+  TargetDecls :: TargetInfo Decls
   TargetName :: TargetInfo Name
 
 class HasTargetInfo a where
@@ -439,6 +440,7 @@ instance HasTargetInfo (Term ty tm) where; targetInfo = TargetTerm
 instance HasTargetInfo (Type ty) where; targetInfo = TargetType
 instance HasTargetInfo Name where; targetInfo = TargetName
 instance HasTargetInfo Decl where; targetInfo = TargetDecl
+instance HasTargetInfo Decls where; targetInfo = TargetDecls
 
 type Path = Seq P
 

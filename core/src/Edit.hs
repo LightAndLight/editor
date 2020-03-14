@@ -37,6 +37,7 @@ edit ::
   Action tgt tgt' ->
   src ->
   Either EditError (Path src tgt', TargetInfo tgt', src)
+edit _ TargetDecls action _ = case action of
 edit _ TargetDecl action _ = case action of
 edit path TargetTerm action a =
   -- path : Path a (Term x)

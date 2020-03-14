@@ -456,22 +456,26 @@ viewTerm nameTy name dmSelection path tm =
 
 viewHoles ::
   DomBuilder t m =>
-  (ty -> Syntax.Name) ->
-  Holes ty tm ->
+  Holes a ->
   m ()
-viewHoles nameTy holes =
+viewHoles holes =
   case holes of
     Nil -> el "div" $ text "no holes"
     ConsHole p ns ty Nil ->
       line p ns ty
     ConsHole p ns ty rest -> do
       line p ns ty
-      viewHoles nameTy rest
-    ConsTHole p1 p2 k Nil ->
+      viewHoles rest
+    ConsTHoleTerm p1 p2 k Nil ->
       tline p1 p2 k
-    ConsTHole p1 p2 k rest -> do
+    ConsTHoleTerm p1 p2 k rest -> do
       tline p1 p2 k
-      viewHoles nameTy rest
+      viewHoles rest
+    ConsTHoleType p1 k Nil ->
+      tline' p1 k
+    ConsTHoleType p1 k rest -> do
+      tline' p1 k
+      viewHoles rest
   where
     line p ns ty =
       el "div" . text $
@@ -479,6 +483,9 @@ viewHoles nameTy holes =
     tline p1 p2 k =
       el "div" . text $
       Text.pack (show p1) <> ", " <> Text.pack (show p2) <> ": " <> Syntax.printKind k
+    tline' p1 k =
+      el "div" . text $
+      Text.pack (show p1) <> ", " <> ": " <> Syntax.printKind k
 
 viewDecl ::
   forall t m a.

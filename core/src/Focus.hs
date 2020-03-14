@@ -36,6 +36,19 @@ nextHole = goDown Path.empty []
       Maybe (Selection x)
     search prefix bs val =
       case targetInfo @a of
+        TargetDecls ->
+          case val of
+            Syntax.Decls ds ->
+              search
+                (Path.snoc prefix $ Path.Decl 0)
+                (ifoldr
+                   (\i e rest ->
+                      Branch (Path.snoc prefix $ Path.Decl (i+1)) e : rest
+                   )
+                   bs
+                   (Vector.tail ds)
+                )
+                (Vector.head ds)
         TargetDecl ->
           case val of
             Syntax.Decl n _ ty tm ->
@@ -306,6 +319,19 @@ prevHole = goDown Path.empty []
       Maybe (Selection x)
     search prefix bs val =
       case targetInfo @a of
+        TargetDecls ->
+          case val of
+            Syntax.Decls ds ->
+              search
+                (Path.snoc prefix $ Path.Decl (Vector.length ds - 1))
+                (ifoldl
+                    (\i rest e ->
+                      Branch (Path.snoc prefix $ Decl i) e : rest
+                    )
+                    bs
+                    (Vector.init ds)
+                )
+                (Vector.last ds)
         TargetDecl ->
           case val of
             Syntax.Decl n _ ty tm ->
