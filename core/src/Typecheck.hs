@@ -362,7 +362,20 @@ inferKind ::
   KCEnv a ty' tm' ->
   Type ty' ->
   m Kind
-inferKind kindEnv ty =
+inferKind kindEnv ty = do
+  k <- inferKind' kindEnv ty
+  case kindEnv of
+    KCEnvType { _keTypeTyPath = tyPath }->
+      addInfo tyPath $ TypeInfo KType
+    _ -> pure ()
+  pure k
+
+inferKind' ::
+  (MonadState (TCState a) m, MonadError TypeError m) =>
+  KCEnv a ty' tm' ->
+  Type ty' ->
+  m Kind
+inferKind' kindEnv ty =
   case runSubst ty of
     THole -> do
       k <- KMeta <$> freshKMeta

@@ -245,7 +245,7 @@ nextHole = goDown Path.empty []
                     (Path.snoc prefix p)
                     (ifoldr
                        (\i e rest ->
-                          if i <= n
+                          if i < n
                           then Branch (Path.snoc prefix $ Path.TSubstR i) e : rest
                           else rest
                        )
@@ -291,7 +291,7 @@ nextHole = goDown Path.empty []
                     (Path.snoc prefix p)
                     (ifoldr
                        (\i e rest ->
-                          if i <= n
+                          if i > n
                           then Branch (Path.snoc prefix $ Path.Decl i) e : rest
                           else rest
                        )
@@ -325,11 +325,11 @@ prevHole = goDown Path.empty []
               search
                 (Path.snoc prefix $ Path.Decl (Vector.length ds - 1))
                 (ifoldl
-                    (\i rest e ->
-                      Branch (Path.snoc prefix $ Decl i) e : rest
-                    )
-                    bs
-                    (Vector.init ds)
+                   (\i rest e ->
+                     Branch (Path.snoc prefix $ Decl i) e : rest
+                   )
+                   bs
+                   (Vector.init ds)
                 )
                 (Vector.last ds)
         TargetDecl ->
@@ -534,7 +534,7 @@ prevHole = goDown Path.empty []
                     (Path.snoc prefix p)
                     (ifoldl
                        (\i rest e ->
-                          if n < i
+                          if i > n
                           then Branch (Path.snoc prefix $ TSubstR i) e : rest
                           else rest
                        )
@@ -580,7 +580,7 @@ prevHole = goDown Path.empty []
                     (Path.snoc prefix p)
                     (ifoldl
                        (\i rest e ->
-                          if n < i
+                          if i > n
                           then Branch (Path.snoc prefix $ Decl i) e : rest
                           else rest
                        )

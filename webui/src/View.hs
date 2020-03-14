@@ -184,7 +184,7 @@ viewTypeChildren nameTy dmSelection path ty = do
 
       nodeHovered holdUniqDyn (aInfo <> bInfo)
     Syntax.TForall n body -> do
-      text "forall"
+      text "∀"
       nInfo <-
         viewName
           id

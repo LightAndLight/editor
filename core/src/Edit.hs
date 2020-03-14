@@ -5,6 +5,7 @@
 module Edit where
 
 import qualified Bound
+import qualified Data.Vector as Vector
 
 import Syntax (Name, Term, Type)
 import qualified Syntax
@@ -27,7 +28,7 @@ data EditError where
   InvalidPath :: Path a b -> a -> EditError
 
 instance Show EditError where
-  show InvalidPath{} = "InvalidPath"
+  show (InvalidPath p _) = "InvalidPath: " <> show p
 
 edit ::
   forall src tgt tgt'.
@@ -52,8 +53,32 @@ edit path TargetTerm action a =
         TargetTerm ->
           case insertVar path n a of
             Nothing -> Left $ InvalidPath path a
-            Just a' -> Right (path, TargetTerm, a')
-        _ -> Left $ InvalidPath path a
+            Just a'' -> Right (path, TargetTerm, a'')
+        TargetType -> Left $ InvalidPath path a
+        TargetName -> Left $ InvalidPath path a
+        TargetDecls ->
+          case Path.viewl path of
+            Path.Decl ix Path.:< ps ->
+              case a of
+                Syntax.Decls ds -> do
+                  (ps', ti', d') <- edit ps TargetTerm action (ds Vector.! ix)
+                  pure
+                    ( Path.cons (Path.Decl ix) ps'
+                    , ti'
+                    , Syntax.Decls $ ds Vector.// [(ix, d')]
+                    )
+        TargetDecl ->
+          case Path.viewl path of
+            Path.DTerm Path.:< ps ->
+              case a of
+                Syntax.Decl name ns ty tm -> do
+                  (ps', ti', tm') <- edit ps TargetTerm action tm
+                  pure
+                    ( Path.cons Path.DTerm ps'
+                    , ti'
+                    , Syntax.Decl name ns ty tm'
+                    )
+            _ -> Left $ InvalidPath path a
     ModifyTerm f suffix ->
       case Path.modify path f a of
         Nothing -> Left $ InvalidPath path a

@@ -101,6 +101,8 @@ data MenuAction a where
   InsertVar :: Path a (Term ty tm) -> Name -> MenuAction a
   InsertName :: Path a Name -> Name -> MenuAction a
   InsertTArr :: Path a (Type ty) -> MenuAction a
+  InsertTForall :: Path a (Type ty) -> MenuAction a
+
   Annotate :: HasTargetInfo b => Path a b -> MenuAction a
 
   DeleteTerm :: Path a (Term ty tm) -> MenuAction a
@@ -120,8 +122,9 @@ renderMenuAction selected action =
     InsertApp{} -> item "_ _"
     InsertVar{} -> item "variable"
     InsertName _ n -> item $ unName n
-    Annotate{} -> item "□ : _"
     InsertTArr{} -> item "_ -> _"
+    InsertTForall{} -> item "∀x. _"
+    Annotate{} -> item "□ : _"
     DeleteTerm{} -> item "_"
     DeleteType{} -> item "_"
     Other str -> item str
@@ -179,6 +182,7 @@ menuItems eNextItem dInputText path = do
           pure $
           constDyn
           [ InsertTArr path
+          , InsertTForall path
           ]
         TargetName ->
           pure $
@@ -396,6 +400,17 @@ runAction action es =
           { _esSelection = Focus.Selection newPath
           , _esContent = new
           }
+    InsertTForall path ->
+      case Path.viewr path of
+        ps :> Path.DType -> error "todo: InsertTForall for DType" ps
+        _ ->
+          case Edit.edit path targetInfo (Edit.InsertType (Syntax.TForall "x" $ lift Syntax.THole) (Path.singleton Path.TForallArg)) (_esContent es) of
+            Left err -> Debug.traceShow err es
+            Right (newPath, _, new) ->
+              es
+              { _esSelection = Focus.Selection newPath
+              , _esContent = new
+              }
     DeleteTerm path ->
       case Edit.edit path TargetTerm Edit.DeleteTerm (_esContent es) of
         Left err -> Debug.traceShow err es
