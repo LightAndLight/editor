@@ -51,11 +51,26 @@ nextHole = goDown Path.empty []
                 (Vector.head ds)
         TargetDecl ->
           case val of
-            Syntax.Decl n _ ty tm ->
+            Syntax.Decl n body ->
               search
                 (Path.snoc prefix Path.DName)
-                (Branch (Path.snoc prefix Path.DType) ty :
-                 Branch (Path.snoc prefix Path.DTerm) tm :
+                (Branch (Path.snoc prefix Path.DBody) body :
+                 bs
+                )
+                n
+        TargetDeclBody ->
+          case val of
+            Syntax.Done ty tm ->
+              search
+                (Path.snoc prefix Path.DBType)
+                (Branch (Path.snoc prefix Path.DBTerm) tm :
+                 bs
+                )
+                ty
+            Syntax.Forall n body ->
+              search
+                (Path.snoc prefix Path.DBForallArg)
+                (Branch (Path.snoc prefix Path.DBForallBody) body :
                  bs
                 )
                 n
@@ -257,28 +272,17 @@ nextHole = goDown Path.empty []
                 _ -> Nothing
             DName ->
               case val of
-                Syntax.Decl val' _ ty tm ->
+                Syntax.Decl val' body ->
                   goDown
                     (Path.snoc prefix p)
-                    (Branch (Path.snoc prefix Path.DType) ty :
-                     Branch (Path.snoc prefix Path.DTerm) tm :
+                    (Branch (Path.snoc prefix Path.DBody) body :
                      bs
                     )
                     suffix'
                     val'
-            DType ->
+            DBody ->
               case val of
-                Syntax.Decl _ _ val' tm ->
-                  goDown
-                    (Path.snoc prefix p)
-                    (Branch (Path.snoc prefix Path.DTerm) tm :
-                     bs
-                    )
-                    suffix'
-                    val'
-            DTerm ->
-              case val of
-                Syntax.Decl _ _ _ val' ->
+                Syntax.Decl _ val' ->
                   goDown
                     (Path.snoc prefix p)
                     bs
@@ -300,6 +304,46 @@ nextHole = goDown Path.empty []
                     )
                     suffix'
                     (ds Vector.! n)
+            DBType ->
+              case val of
+                Syntax.Done val' tm ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DBTerm) tm :
+                     bs
+                    )
+                    suffix'
+                    val'
+                _ -> Nothing
+            DBTerm ->
+              case val of
+                Syntax.Done _ val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    bs
+                    suffix'
+                    val'
+                _ -> Nothing
+            DBForallArg ->
+              case val of
+                Syntax.Forall val' body ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DBForallBody) body :
+                     bs
+                    )
+                    suffix'
+                    val'
+                _ -> Nothing
+            DBForallBody ->
+              case val of
+                Syntax.Forall _ val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    bs
+                    suffix'
+                    val'
+                _ -> Nothing
 
 prevHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
 prevHole = goDown Path.empty []
@@ -334,14 +378,29 @@ prevHole = goDown Path.empty []
                 (Vector.last ds)
         TargetDecl ->
           case val of
-            Syntax.Decl n _ ty tm ->
+            Syntax.Decl n body ->
               search
-                (Path.snoc prefix Path.DTerm)
+                (Path.snoc prefix Path.DBody)
                 (Branch (Path.snoc prefix Path.DName) n :
-                 Branch (Path.snoc prefix Path.DType) ty :
+                 bs
+                )
+                body
+        TargetDeclBody ->
+          case val of
+            Syntax.Done ty tm ->
+              search
+                (Path.snoc prefix Path.DBTerm)
+                (Branch (Path.snoc prefix Path.DBType) ty :
                  bs
                 )
                 tm
+            Syntax.Forall n body ->
+              search
+                (Path.snoc prefix Path.DBForallBody)
+                (Branch (Path.snoc prefix Path.DBForallArg) n :
+                 bs
+                )
+                body
         TargetTerm ->
           case val of
             Syntax.Hole -> Just $ Selection prefix
@@ -546,15 +605,15 @@ prevHole = goDown Path.empty []
                 _ -> Nothing
             DName ->
               case val of
-                Syntax.Decl val' _ _ _ ->
+                Syntax.Decl val' _ ->
                   goDown
                     (Path.snoc prefix p)
                     bs
                     suffix'
                     val'
-            DType ->
+            DBody ->
               case val of
-                Syntax.Decl n _ val' _ ->
+                Syntax.Decl n val' ->
                   goDown
                     (Path.snoc prefix p)
                     (Branch (Path.snoc prefix Path.DName) n :
@@ -562,17 +621,46 @@ prevHole = goDown Path.empty []
                     )
                     suffix'
                     val'
-            DTerm ->
+            DBType ->
               case val of
-                Syntax.Decl n _ ty val' ->
+                Syntax.Done val' _ ->
                   goDown
                     (Path.snoc prefix p)
-                    (Branch (Path.snoc prefix Path.DType) ty :
-                     Branch (Path.snoc prefix Path.DName) n :
+                    bs
+                    suffix'
+                    val'
+                _ -> Nothing
+            DBTerm ->
+              case val of
+                Syntax.Done ty val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DBType) ty :
                      bs
                     )
                     suffix'
                     val'
+                _ -> Nothing
+            DBForallArg ->
+              case val of
+                Syntax.Forall val' _ ->
+                  goDown
+                    (Path.snoc prefix p)
+                    bs
+                    suffix'
+                    val'
+                _ -> Nothing
+            DBForallBody ->
+              case val of
+                Syntax.Forall n val' ->
+                  goDown
+                    (Path.snoc prefix p)
+                    (Branch (Path.snoc prefix Path.DBForallArg) n :
+                     bs
+                    )
+                    suffix'
+                    val'
+                _ -> Nothing
             Decl n ->
               case val of
                 Syntax.Decls ds ->

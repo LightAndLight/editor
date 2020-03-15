@@ -754,6 +754,65 @@ infer' tcEnv tm =
       applySolutions_Holes
       pure outTy'
 
+checkDeclBody ::
+  forall a m ty tm.
+  (MonadState (TCState a) m, MonadError TypeError m, Eq ty) =>
+  (tm -> Name) ->
+  (ty -> Name) ->
+  (Name -> Maybe (Type ty)) ->
+  (tm -> Maybe (Type ty)) ->
+  (Name -> Maybe Kind) ->
+  (ty -> Maybe Kind) ->
+  Seq (Name, Type ty, Kind) ->
+  Path a (DeclBody ty tm) ->
+  DeclBody ty tm ->
+  m (DeclBody ty tm)
+checkDeclBody name nameTy ctxG ctx tyCtxG tyCtx boundTyVars path d =
+  case d of
+    Syntax.Done ty tm -> do
+      let tyPath = Path.snoc path Path.DBType
+      checkKind
+        (KCEnvType
+        { _keName = nameTy
+        , _keGlobalCtx = tyCtxG
+        , _keCtx = tyCtx
+        , _keTypeTyPath = tyPath
+        }
+        )
+        ty
+        KType
+      addInfo tyPath $ TypeInfo KType
+      check
+        (TCEnv
+        { _teName = name
+        , _teNameTy = nameTy
+        , _teGlobalCtx = ctxG
+        , _teCtx = ctx
+        , _teGlobalTyCtx = tyCtxG
+        , _teTyCtx = tyCtx
+        , _teBoundTyVars = boundTyVars
+        , _tePath = Path.snoc path Path.DBTerm
+        }
+        )
+        tm
+        ty
+      pure $ Syntax.Done ty tm
+    Syntax.Forall n body -> do
+      k <- KMeta <$> freshKMeta
+      Syntax.Forall n <$>
+        checkDeclBody
+          name
+          (unvar (\() -> n) nameTy)
+          ((fmap.fmap) Bound.F . ctxG)
+          ((fmap.fmap) Bound.F . ctx)
+          tyCtxG
+          (unvar (\() -> Just k) tyCtx)
+          (fmap (\(a, b, c) -> (a, Bound.F <$> b, c)) boundTyVars Seq.|>
+           (n, Syntax.TVar $ Bound.B (), k)
+          )
+          (Path.snoc path Path.DBForallBody)
+          body
+
 checkDecl ::
   forall a m.
   (MonadState (TCState a) m, MonadError TypeError m) =>
@@ -762,42 +821,18 @@ checkDecl ::
   Path a Decl ->
   Decl ->
   m (Name, Decl)
-checkDecl ctxG tyCtxG path d@(Decl name tyNames ty tm) = do
-  kmetas <- traverse (\_ -> KMeta <$> freshKMeta) tyNames
-  let tyPath = Path.snoc path Path.DType
-  checkKind
-    (KCEnvType
-     { _keName = unvar (tyNames Vector.!) absurd
-     , _keGlobalCtx = tyCtxG
-     , _keCtx = unvar (Just . (kmetas Vector.!)) absurd
-     , _keTypeTyPath = tyPath
-     }
-    )
-    ty
-    KType
-  addInfo tyPath $ TypeInfo KType
-  kmetas' <- do
-    subs <- gets _tcKindSubst
-    pure $ Syntax.substKMetas subs <$> kmetas
-  check
-    (TCEnv
-     { _teName = absurd
-     , _teNameTy = unvar (tyNames Vector.!) absurd
-     , _teGlobalCtx = (fmap.fmap) Bound.F . ctxG
-     , _teCtx = absurd
-     , _teGlobalTyCtx = tyCtxG
-     , _teTyCtx = unvar (Just . (kmetas Vector.!)) absurd
-     , _teBoundTyVars =
-       ifoldr
-         (\i (t, k) -> (Seq.<|) (t, Syntax.TVar (Bound.B i), k))
-         mempty
-         (Vector.zip tyNames kmetas')
-     , _tePath = Path.snoc path Path.DTerm
-     }
-    )
-    tm
-    ty
-  pure (name, d)
+checkDecl ctxG tyCtxG path (Decl name body) =
+  (,) name . Decl name <$>
+  checkDeclBody
+    absurd
+    absurd
+    ctxG
+    absurd
+    tyCtxG
+    absurd
+    mempty
+    (Path.snoc path Path.DBody)
+    body
 
 checkDecls ::
   forall a m.

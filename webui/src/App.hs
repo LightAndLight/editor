@@ -161,6 +161,7 @@ menuItems eNextItem dInputText path = do
     dItems <-
       case targetInfo @b of
         TargetDecls -> error "todo: menu for decls"
+        TargetDeclBody -> error "todo: menu for declbody"
         TargetDecl ->
           pure $
           constDyn
@@ -341,6 +342,7 @@ runAction action es =
     Annotate (path :: Path a x) ->
       case targetInfo @x of
         TargetDecl -> es
+        TargetDeclBody -> es
         TargetDecls -> es
         TargetType -> error "todo: annotate type"
         TargetTerm ->
@@ -356,8 +358,9 @@ runAction action es =
             EmptyR -> es
             ps :> p ->
               case p of
-                Path.DName -> es { _esSelection = Focus.Selection $ Path.snoc ps Path.DType }
+                Path.DName -> error "todo: annotate DName"
                 Path.TForallArg -> error "todo: annotate TForallArg"
+                Path.DBForallArg -> error "todo: annotate DBForallArg"
                 Path.LamAnnArg->
                   case Zipper.downTo ps $ Zipper.toZipper (_esContent es) of
                     Nothing -> es
@@ -401,21 +404,13 @@ runAction action es =
           , _esContent = new
           }
     InsertTForall path ->
-      case Path.viewr path of
-        ps :> Path.DType ->
-          case Zipper.downTo ps . Zipper.toZipper $ _esContent es of
-            Nothing -> es
-            Just z ->
-              case Zipper._focus z of
-                Syntax.Decl dname dnames dty dtm -> _
-        _ ->
-          case Edit.edit path targetInfo (Edit.InsertType (Syntax.TForall "x" $ lift Syntax.THole) (Path.singleton Path.TForallArg)) (_esContent es) of
-            Left err -> Debug.traceShow err es
-            Right (newPath, _, new) ->
-              es
-              { _esSelection = Focus.Selection newPath
-              , _esContent = new
-              }
+      case Edit.edit path targetInfo (Edit.InsertType (Syntax.TForall "x" $ lift Syntax.THole) (Path.singleton Path.TForallArg)) (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     DeleteTerm path ->
       case Edit.edit path TargetTerm Edit.DeleteTerm (_esContent es) of
         Left err -> Debug.traceShow err es
@@ -523,7 +518,13 @@ app =
                  Path.singleton (Path.Decl 0)
                , _esContent =
                  Syntax.Decls
-                 [ Syntax.Decl (Syntax.N "val") mempty Syntax.THole Syntax.Hole
+                 [ Syntax.Decl
+                     (Syntax.N "val")
+                     (Syntax.Forall "x" $
+                      Syntax.Forall "y" $
+                      Syntax.Forall "z" $
+                      Syntax.Done Syntax.THole Syntax.Hole
+                     )
                  ]
                }
               )
@@ -551,6 +552,7 @@ app =
                         TargetTerm -> Just [DeleteTerm path]
                         TargetType -> Just [DeleteType path]
                         TargetDecl -> Nothing
+                        TargetDeclBody -> Nothing
                         TargetDecls -> Nothing
                         TargetName -> Nothing
                 )
@@ -613,6 +615,8 @@ app =
                infoItem "Form" "name"
              TargetDecl -> do
                infoItem "Form" "declaration"
+             TargetDeclBody -> do
+               infoItem "Form" "declaration body"
              TargetDecls -> do
                infoItem "Form" "declarations"
         ) <$>

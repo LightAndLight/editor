@@ -235,12 +235,14 @@ printType nameTy ty =
       ) <>
       ")"
 
+data DeclBody ty tm
+  = Done (Type ty) (Term ty tm)
+  | Forall Name (DeclBody (Bound.Var () ty) tm)
+
 data Decl
   = Decl
   { _declName :: Name
-  , _declTypeBindings :: Vector Name
-  , _declType :: Type (Bound.Var Int Void)
-  , _declTerm :: Term (Bound.Var Int Void) Void
+  , _declBody :: DeclBody Void Void
   }
 
 newtype Decls = Decls (Vector Decl)

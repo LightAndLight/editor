@@ -40,6 +40,7 @@ edit ::
   Either EditError (Path src tgt', TargetInfo tgt', src)
 edit _ TargetDecls action _ = case action of
 edit _ TargetDecl action _ = case action of
+edit _ TargetDeclBody action _ = case action of
 edit path TargetTerm action a =
   -- path : Path a (Term x)
   -- action : Edit (Term x) c
@@ -69,15 +70,38 @@ edit path TargetTerm action a =
                     )
         TargetDecl ->
           case Path.viewl path of
-            Path.DTerm Path.:< ps ->
+            Path.DBody Path.:< ps ->
               case a of
-                Syntax.Decl name ns ty tm -> do
+                Syntax.Decl name body -> do
+                  (ps', ti', tm') <- edit ps TargetTerm action body
+                  pure
+                    ( Path.cons Path.DBody ps'
+                    , ti'
+                    , Syntax.Decl name tm'
+                    )
+            _ -> Left $ InvalidPath path a
+        TargetDeclBody ->
+          case Path.viewl path of
+            Path.DBTerm Path.:< ps ->
+              case a of
+                Syntax.Done ty tm -> do
                   (ps', ti', tm') <- edit ps TargetTerm action tm
                   pure
-                    ( Path.cons Path.DTerm ps'
+                    ( Path.cons Path.DBTerm ps'
                     , ti'
-                    , Syntax.Decl name ns ty tm'
+                    , Syntax.Done ty tm'
                     )
+                _ -> Left $ InvalidPath path a
+            Path.DBForallBody Path.:< ps ->
+              case a of
+                Syntax.Forall name body -> do
+                  (ps', ti', body') <- edit ps TargetTerm action body
+                  pure
+                    ( Path.cons Path.DBForallBody ps'
+                    , ti'
+                    , Syntax.Forall name body'
+                    )
+                _ -> Left $ InvalidPath path a
             _ -> Left $ InvalidPath path a
     ModifyTerm f suffix ->
       case Path.modify path f a of

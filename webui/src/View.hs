@@ -16,7 +16,6 @@ import Control.Lens.TH (makeLenses)
 import Control.Monad.Fix (MonadFix)
 import Data.Foldable (fold)
 import qualified Data.Text as Text
-import qualified Data.Vector as Vector
 import Data.Void (absurd)
 import Reflex
 import Reflex.Dom
@@ -487,6 +486,98 @@ viewHoles holes =
       el "div" . text $
       Text.pack (show p1) <> ", " <> ": " <> Syntax.printKind k
 
+viewDeclBody ::
+  forall t m a ty tm.
+  ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
+  ) =>
+  (ty -> Syntax.Name) ->
+  (tm -> Syntax.Name) ->
+  Dynamic t (Maybe (Selection (Syntax.DeclBody ty tm))) ->
+  Path a (Syntax.DeclBody ty tm) ->
+  m (NodeInfo t a) ->
+  Bool ->
+  (m (NodeInfo t a) -> m (NodeInfo t a)) ->
+  Syntax.DeclBody ty tm ->
+  m (NodeInfo t a)
+viewDeclBody nameTy name dmSelection path vname hasBinder vty (Syntax.Done ty tm) = do
+  sigInfo <-
+    el "div" $ do
+      nInfo <- vname
+
+      text ":"
+
+      let tyPath = Path.snoc path Path.DBType
+      tyInfo <- do
+        if hasBinder then text "∀" else pure ()
+        vty $ do
+          if hasBinder then text "." else pure ()
+          viewType
+            nameTy
+            ((>>=
+              \(Selection f) -> case viewl f of
+              Path.DBType :< rest -> Just (Selection rest)
+              _ -> Nothing
+            ) <$>
+            dmSelection
+            )
+            tyPath
+            ty
+      nodeHovered holdUniqDyn (nInfo <> tyInfo)
+  bodyInfo <-
+    el "div" $ do
+      nInfo <- vname
+
+      text "="
+
+      let tmPath = Path.snoc path Path.DBTerm
+      tmInfo <-
+        viewTerm
+          nameTy
+          name
+          ((>>=
+            \(Selection f) -> case viewl f of
+            Path.DBTerm :< rest -> Just (Selection rest)
+            _ -> Nothing
+           ) <$>
+           dmSelection
+          )
+          tmPath
+          tm
+      nodeHovered holdUniqDyn (nInfo <> tmInfo)
+  nodeHovered holdUniqDyn (sigInfo <> bodyInfo)
+viewDeclBody nameTy name dmSelection path vname hasBinder vty (Syntax.Forall n body) =
+  viewDeclBody
+    (unvar (\() -> n) nameTy)
+    name
+    ((>>=
+      \(Selection f) -> case viewl f of
+      Path.DBForallBody :< rest -> Just (Selection rest)
+      _ -> Nothing
+      ) <$>
+      dmSelection
+    )
+    (Path.snoc path Path.DBForallBody)
+    vname
+    (hasBinder || True)
+    (\mty ->
+       vty $ do
+         nInfo <-
+           viewName
+           id
+           ((>>=
+             \(Selection f) -> case viewl f of
+             Path.DBForallArg :< rest -> Just (Selection rest)
+             _ -> Nothing
+             ) <$>
+             dmSelection
+           )
+           (Path.snoc path Path.DBForallArg)
+           n
+         mInfo <- mty
+         nodeHovered holdUniqDyn $ nInfo <> mInfo
+    )
+    body
+
 viewDecl ::
   forall t m a.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
@@ -495,9 +586,37 @@ viewDecl ::
   Path a Syntax.Decl ->
   Syntax.Decl ->
   m (NodeInfo t a)
-viewDecl dmSelection path decl = viewNode (const False) dmSelection path viewDeclChildren decl
+viewDecl dmSelection path decl =
+  viewNode (const False) dmSelection path viewDeclChildren decl
   where
-    viewDeclChildren (Syntax.Decl name tyNames ty tm) = do
+    viewDeclChildren (Syntax.Decl name body) =
+      viewDeclBody
+        absurd
+        absurd
+        ((>>=
+         \(Selection f) -> case viewl f of
+           Path.DBody :< rest -> Just (Selection rest)
+           _ -> Nothing
+         ) <$>
+         dmSelection
+        )
+        (Path.snoc path Path.DBody)
+        (viewName
+          id
+          ((>>=
+           \(Selection f) -> case viewl f of
+             Path.DName :< rest -> Just (Selection rest)
+             _ -> Nothing
+           ) <$>
+           dmSelection
+          )
+          (Path.snoc path Path.DName)
+          name
+        )
+        False
+        id
+        body
+{-
       let
         namePath = Path.snoc path Path.DName
         nameSelection =
@@ -507,48 +626,7 @@ viewDecl dmSelection path decl = viewNode (const False) dmSelection path viewDec
             _ -> Nothing
           ) <$>
           dmSelection
-      sigInfo <-
-        el "div" $ do
-          nInfo <- viewName id nameSelection namePath name
-
-          text ":"
-
-          let tyPath = Path.snoc path Path.DType
-          tyInfo <-
-            viewType
-              (unvar (tyNames Vector.!) absurd)
-              ((>>=
-               \(Selection f) -> case viewl f of
-                DType :< rest -> Just (Selection rest)
-                _ -> Nothing
-               ) <$>
-               dmSelection
-              )
-              tyPath
-              ty
-          nodeHovered holdUniqDyn (nInfo <> tyInfo)
-      bodyInfo <-
-        el "div" $ do
-          nInfo <- viewName id nameSelection namePath name
-
-          text "="
-
-          let tmPath = Path.snoc path Path.DTerm
-          tmInfo <-
-            viewTerm
-              (unvar (tyNames Vector.!) absurd)
-              absurd
-              ((>>=
-               \(Selection f) -> case viewl f of
-                DTerm :< rest -> Just (Selection rest)
-                _ -> Nothing
-               ) <$>
-               dmSelection
-              )
-              tmPath
-              tm
-          nodeHovered holdUniqDyn (nInfo <> tmInfo)
-      nodeHovered holdUniqDyn (sigInfo <> bodyInfo)
+-}
 
 viewDecls ::
   forall t m a.

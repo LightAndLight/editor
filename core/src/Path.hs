@@ -14,7 +14,7 @@ import Data.Type.Equality ((:~:)(..))
 import qualified Data.Vector as Vector
 import Data.Void (Void)
 
-import Syntax (Decl, Decls, Name, Term, Type)
+import Syntax (Decl, DeclBody, Decls, Name, Term, Type)
 import qualified Syntax
 
 data P a b where
@@ -37,8 +37,11 @@ data P a b where
   TSubstR :: Int -> P (Type a) (Type a)
 
   DName :: P Decl Name
-  DType :: P Decl (Type (Bound.Var Int Void))
-  DTerm :: P Decl (Term (Bound.Var Int Void) Void)
+  DBody :: P Decl (DeclBody Void Void)
+  DBType :: P (DeclBody ty tm) (Type ty)
+  DBTerm :: P (DeclBody ty tm) (Term ty tm)
+  DBForallArg :: P (DeclBody ty tm) Name
+  DBForallBody :: P (DeclBody ty tm) (DeclBody (Var () ty) tm)
   Decl :: Int -> P Decls Decl
 
 deriving instance Show (P a b)
@@ -115,13 +118,25 @@ eqP DName a =
   case a of
     DName -> Just Refl
     _ -> Nothing
-eqP DType a =
+eqP DBody a =
   case a of
-    DType -> Just Refl
+    DBody -> Just Refl
     _ -> Nothing
-eqP DTerm a =
+eqP DBType a =
   case a of
-    DTerm -> Just Refl
+    DBType -> Just Refl
+    _ -> Nothing
+eqP DBTerm a =
+  case a of
+    DBTerm -> Just Refl
+    _ -> Nothing
+eqP DBForallArg a =
+  case a of
+    DBForallArg -> Just Refl
+    _ -> Nothing
+eqP DBForallBody a =
+  case a of
+    DBForallBody -> Just Refl
     _ -> Nothing
 eqP (Decl n) a =
   case a of
@@ -213,16 +228,32 @@ matchP p a =
         _ -> Nothing
     DName ->
       case a of
-        Syntax.Decl n ns ty tm ->
-          Just (n, \n' -> Syntax.Decl n' ns ty tm)
-    DType ->
+        Syntax.Decl n body ->
+          Just (n, \n' -> Syntax.Decl n' body)
+    DBody ->
       case a of
-        Syntax.Decl n ns ty tm ->
-          Just (ty, \ty' -> Syntax.Decl n ns ty' tm)
-    DTerm ->
+        Syntax.Decl n body ->
+          Just (body, \body' -> Syntax.Decl n body')
+    DBType ->
       case a of
-        Syntax.Decl n ns ty tm ->
-          Just (tm, \tm' -> Syntax.Decl n ns ty tm')
+        Syntax.Done ty tm ->
+          Just (ty, \ty' -> Syntax.Done ty' tm)
+        _ -> Nothing
+    DBTerm ->
+      case a of
+        Syntax.Done ty tm ->
+          Just (tm, \tm' -> Syntax.Done ty tm')
+        _ -> Nothing
+    DBForallArg ->
+      case a of
+        Syntax.Forall n body ->
+          Just (n, \n' -> Syntax.Forall n' body)
+        _ ->Nothing
+    DBForallBody ->
+      case a of
+        Syntax.Forall n body ->
+          Just (body, \body' -> Syntax.Forall n body')
+        _ -> Nothing
     Decl n ->
       case a of
         Syntax.Decls ds ->
@@ -430,6 +461,7 @@ data TargetInfo b where
   TargetTerm :: TargetInfo (Term ty v)
   TargetType :: TargetInfo (Type v)
   TargetDecl :: TargetInfo Decl
+  TargetDeclBody :: TargetInfo (DeclBody ty tm)
   TargetDecls :: TargetInfo Decls
   TargetName :: TargetInfo Name
 
@@ -440,6 +472,7 @@ instance HasTargetInfo (Term ty tm) where; targetInfo = TargetTerm
 instance HasTargetInfo (Type ty) where; targetInfo = TargetType
 instance HasTargetInfo Name where; targetInfo = TargetName
 instance HasTargetInfo Decl where; targetInfo = TargetDecl
+instance HasTargetInfo (DeclBody ty tm) where; targetInfo = TargetDeclBody
 instance HasTargetInfo Decls where; targetInfo = TargetDecls
 
 type Path = Seq P
