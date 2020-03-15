@@ -38,10 +38,12 @@ data P a b where
 
   DName :: P Decl Name
   DBody :: P Decl (DeclBody Void Void)
+
   DBType :: P (DeclBody ty tm) (Type ty)
   DBTerm :: P (DeclBody ty tm) (Term ty tm)
   DBForallArg :: P (DeclBody ty tm) Name
   DBForallBody :: P (DeclBody ty tm) (DeclBody (Var () ty) tm)
+
   Decl :: Int -> P Decls Decl
 
 deriving instance Show (P a b)

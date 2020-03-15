@@ -102,6 +102,7 @@ data MenuAction a where
   InsertName :: Path a Name -> Name -> MenuAction a
   InsertTArr :: Path a (Type ty) -> MenuAction a
   InsertTForall :: Path a (Type ty) -> MenuAction a
+  InsertTVar :: Path a (Type ty) -> Name -> MenuAction a
 
   Annotate :: HasTargetInfo b => Path a b -> MenuAction a
 
@@ -124,6 +125,7 @@ renderMenuAction selected action =
     InsertName _ n -> item $ unName n
     InsertTArr{} -> item "_ -> _"
     InsertTForall{} -> item "∀x. _"
+    InsertTVar{} -> item "type variable"
     Annotate{} -> item "□ : _"
     DeleteTerm{} -> item "_"
     DeleteType{} -> item "_"
@@ -181,10 +183,13 @@ menuItems eNextItem dInputText path = do
             dInputText
         TargetType ->
           pure $
-          constDyn
-          [ InsertTArr path
-          , InsertTForall path
-          ]
+          (\n ->
+           [ InsertTArr path
+           , InsertTForall path
+           , InsertTVar path $ N n
+           ]
+          ) <$>
+          dInputText
         TargetName ->
           pure $
             (\n ->
@@ -242,6 +247,7 @@ menuForTarget eNextItem eEnter path =
           (\sel txt ->
              case sel of
                InsertVar{} -> not $ Text.null txt
+               InsertTVar{} -> not $ Text.null txt
                _ -> True
           ) <$>
           dAction <*>
@@ -411,6 +417,21 @@ runAction action es =
           { _esSelection = Focus.Selection newPath
           , _esContent = new
           }
+    InsertTVar path n ->
+      case Edit.edit path targetInfo (Edit.InsertTVar n) (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          case Focus.nextHole newPath new of
+            Nothing ->
+              es
+              { _esSelection = Focus.Selection newPath
+              , _esContent = new
+              }
+            Just newPath' ->
+              es
+              { _esSelection = newPath'
+              , _esContent = new
+              }
     DeleteTerm path ->
       case Edit.edit path TargetTerm Edit.DeleteTerm (_esContent es) of
         Left err -> Debug.traceShow err es
@@ -587,7 +608,7 @@ app =
                infoItem "Form" "expr"
                case tcRes of
                  Left err ->
-                   text . Text.pack $ show err
+                   text $ Typecheck.printTypeError err
                  Right (_, st) -> do
                    let
                      ty =
@@ -601,7 +622,7 @@ app =
                infoItem "Form" "type"
                case tcRes of
                  Left err ->
-                   text . Text.pack $ show err
+                   text $ Typecheck.printTypeError err
                  Right (_, st) -> do
                    let
                      ki =

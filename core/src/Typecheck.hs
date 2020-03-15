@@ -1,6 +1,7 @@
 {-# language FlexibleContexts #-}
 {-# language GADTs, StandaloneDeriving #-}
 {-# language LambdaCase #-}
+{-# language OverloadedStrings #-}
 {-# language RankNTypes #-}
 {-# language ScopedTypeVariables, TypeApplications #-}
 module Typecheck where
@@ -17,6 +18,8 @@ import qualified Data.Map as Map
 import Data.Maybe as Maybe
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Void (Void, absurd)
@@ -219,7 +222,6 @@ appendHoles (ConsTHoleType p1 k rest) hs = ConsTHoleType p1 k $ appendHoles rest
 data TypeError
   = NotInScope Name
   | TMetaNotInScope TMeta
-  | ExpectedArr (Type Name)
   | Can'tInfer (Term Name Name)
   | NotTArr (Term Name Name)
   | TypeMismatch (Type Name) (Type Name)
@@ -228,6 +230,13 @@ data TypeError
   | ArityMismatch Int Int
   | Escape Name
   deriving Show
+
+printTypeError :: TypeError -> Text
+printTypeError te =
+  case te of
+    KindMismatch k1 k2 -> "Expected kind: '" <> printKind k1 <> "' but got '" <> printKind k2 <> "'"
+    TypeMismatch t1 t2 -> "Expected type: '" <> printType id t1 <> "' but got '" <> printType id t2 <> "'"
+    _ -> Text.pack $ show te
 
 freshTMeta ::
   MonadState (TCState a) m =>
@@ -332,8 +341,10 @@ unifyKind expected actual =
             traverse_
               (\(a, b) ->
                  if fst a == fst b
-                 then throwError $ KindMismatch expected actual
-                 else unifyKind (snd a) (snd b)
+                 then
+                   unifyKind (snd a) (snd b)
+                 else
+                   throwError $ KindMismatch expected actual
               )
               (Vector.zip ctx ctx')
             unifyKind k k'
@@ -602,7 +613,8 @@ unifyType kindEnv expected actual =
                then do
                  unifyKind (snd a) (snd b)
                  applySolutions_THoles
-               else typeMismatch (_keName kindEnv) expected actual
+               else
+                 typeMismatch (_keName kindEnv) expected actual
             )
             (Vector.zip ns ns')
           unifyType

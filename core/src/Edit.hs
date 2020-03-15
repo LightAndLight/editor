@@ -22,6 +22,7 @@ data Action a b where
   DeleteTerm :: Action (Term ty a) (Term ty a)
   ModifyName :: (Name -> Name) -> Action Name Name
   InsertType :: Type a -> Path (Type a) b -> Action (Type a) b
+  InsertTVar :: Name -> Action (Type ty) (Type ty)
   DeleteType :: Action (Type a) (Type a)
 
 data EditError where
@@ -125,10 +126,177 @@ edit path TargetType action a =
       case Path.set path ty a of
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
+    InsertTVar name ->
+      case insertTVar path name a of
+        Nothing -> Left $ InvalidPath path a
+        Just a' -> Right (path, TargetType, a')
     DeleteType ->
       case Path.set path Syntax.THole a of
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (path, TargetType, a')
+
+insertTVar ::
+  forall a ty'.
+  HasTargetInfo a =>
+  Path a (Type ty') ->
+  Name ->
+  a ->
+  Maybe a
+insertTVar =
+  case targetInfo @a of
+    TargetName -> \_ _ _ -> Nothing
+    TargetType -> goType Syntax.TName
+    TargetTerm -> goTerm Syntax.TName
+    TargetDecl -> goDecl
+    TargetDecls -> goDecls
+    TargetDeclBody -> goDeclBody Syntax.TName
+  where
+    goDecls ::
+      Path Syntax.Decls (Type ty') ->
+      Name ->
+      Syntax.Decls ->
+      Maybe Syntax.Decls
+    goDecls path n ds =
+      case Path.viewl path of
+        p Path.:< ps ->
+          case p of
+            Path.Decl ix -> do
+              (a', mk) <- Path.matchP (Path.Decl ix) ds
+              mk <$> goDecl ps n a'
+
+    goDecl ::
+      Path Syntax.Decl (Type ty') ->
+      Name ->
+      Syntax.Decl ->
+      Maybe Syntax.Decl
+    goDecl path n d =
+      case Path.viewl path of
+        p Path.:< ps ->
+          case p of
+            Path.DName -> Nothing
+            Path.DBody -> do
+              (a', mk) <- Path.matchP Path.DBody d
+              mk <$> goDeclBody Syntax.TName ps n a'
+
+    goType ::
+      (Name -> Type ty) ->
+      Path (Type ty) (Type ty') ->
+      Name ->
+      Type ty ->
+      Maybe (Type ty)
+    goType mkTy path n a =
+      case Path.viewl path of
+        Path.EmptyL -> Just $ mkTy n
+        p Path.:< ps ->
+          case p of
+            Path.TForallArg -> Nothing
+            Path.TForallBody ->
+              case a of
+                Syntax.TForall n' body ->
+                  Syntax.TForall n' . Bound.toScope <$>
+                  goType
+                    (\x ->
+                       if x == n'
+                       then Syntax.TVar (Bound.B ())
+                       else Bound.F <$> mkTy x
+                    )
+                    ps
+                    n
+                    (Bound.fromScope body)
+                _ -> Nothing
+            Path.TUnsolvedBody ->
+              case a of
+                Syntax.TUnsolved ns body ->
+                  Syntax.TUnsolved ns . Bound.toScope <$>
+                  goType
+                    (\x ->
+                       maybe
+                         (Syntax.TName x)
+                         (Syntax.TVar . Bound.B)
+                         (Vector.findIndex ((x ==) . fst) ns)
+                    )
+                    ps
+                    n
+                    (Bound.fromScope body)
+                _ -> Nothing
+            Path.TArrL -> do
+              (ty', mk) <- Path.matchP Path.TArrL a
+              mk <$> goType mkTy ps n ty'
+            Path.TArrR -> do
+              (ty', mk) <- Path.matchP Path.TArrR a
+              mk <$> goType mkTy ps n ty'
+            Path.TSubstL -> do
+              (ty', mk) <- Path.matchP Path.TSubstL a
+              mk <$> goType mkTy ps n ty'
+            Path.TSubstR ix -> do
+              (ty', mk) <- Path.matchP (Path.TSubstR ix) a
+              mk <$> goType mkTy ps n ty'
+
+    goDeclBody ::
+      (Name -> Type ty) ->
+      Path (Syntax.DeclBody ty tm) (Type ty') ->
+      Name ->
+      Syntax.DeclBody ty tm ->
+      Maybe (Syntax.DeclBody ty tm)
+    goDeclBody mkTy path n a =
+      case Path.viewl path of
+        p Path.:< ps ->
+          case p of
+            Path.DBForallArg -> Nothing
+            Path.DBForallBody ->
+              case a of
+                Syntax.Forall n' body ->
+                  Syntax.Forall n' <$>
+                  goDeclBody
+                    (\x ->
+                       if x == n'
+                       then Syntax.TVar (Bound.B ())
+                       else Bound.F <$> mkTy x
+                    )
+                    ps
+                    n
+                    body
+                _ -> Nothing
+            Path.DBTerm -> do
+              (tm', mk) <- Path.matchP Path.DBTerm a
+              mk <$> goTerm mkTy ps n tm'
+            Path.DBType -> do
+              (ty', mk) <- Path.matchP Path.DBType a
+              mk <$> goType mkTy ps n ty'
+
+    goTerm ::
+      (Name -> Type ty) ->
+      Path (Syntax.Term ty tm) (Type ty') ->
+      Name ->
+      Syntax.Term ty tm ->
+      Maybe (Syntax.Term ty tm)
+    goTerm mkTy path n tm =
+      case Path.viewl path of
+        p Path.:< ps ->
+          case p of
+            Path.AppL -> do
+              (tm', mk) <- Path.matchP Path.AppL tm
+              mk <$> goTerm mkTy ps n tm'
+            Path.AppR -> do
+              (tm', mk) <- Path.matchP Path.AppR tm
+              mk <$> goTerm mkTy ps n tm'
+            Path.LamArg -> Nothing
+            Path.LamBody -> do
+              (tm', mk) <- Path.matchP Path.LamBody tm
+              mk <$> goTerm mkTy ps n tm'
+            Path.LamAnnArg -> Nothing
+            Path.LamAnnType -> do
+              (ty, mk) <- Path.matchP Path.LamAnnType tm
+              mk <$> goType mkTy ps n ty
+            Path.LamAnnBody -> do
+              (tm', mk) <- Path.matchP Path.LamAnnBody tm
+              mk <$> goTerm mkTy ps n tm'
+            Path.AnnL -> do
+              (tm', mk) <- Path.matchP Path.AnnL tm
+              mk <$> goTerm mkTy ps n tm'
+            Path.AnnR -> do
+              (ty, mk) <- Path.matchP Path.AnnR tm
+              mk <$> goType mkTy ps n ty
 
 insertVar ::
   Path (Term ty tm) (Term ty' tm') ->
