@@ -402,7 +402,12 @@ runAction action es =
           }
     InsertTForall path ->
       case Path.viewr path of
-        ps :> Path.DType -> error "todo: InsertTForall for DType" ps
+        ps :> Path.DType ->
+          case Zipper.downTo ps . Zipper.toZipper $ _esContent es of
+            Nothing -> es
+            Just z ->
+              case Zipper._focus z of
+                Syntax.Decl dname dnames dty dtm -> _
         _ ->
           case Edit.edit path targetInfo (Edit.InsertType (Syntax.TForall "x" $ lift Syntax.THole) (Path.singleton Path.TForallArg)) (_esContent es) of
             Left err -> Debug.traceShow err es
