@@ -410,7 +410,7 @@ runAction action es =
           , _esContent = new
           }
     InsertTForall path ->
-      case Edit.edit path targetInfo (Edit.InsertType (Syntax.TForall "x" $ lift Syntax.THole) (Path.singleton Path.TForallArg)) (_esContent es) of
+      case Edit.edit path targetInfo (Edit.InsertTForall "x") (_esContent es) of
         Left err -> Debug.traceShow err es
         Right (newPath, _, new) ->
           es

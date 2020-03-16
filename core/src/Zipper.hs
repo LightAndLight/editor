@@ -17,6 +17,12 @@ data Zipper a b
   , _focus :: b
   }
 
+mapFocus :: (b -> b) -> Zipper a b -> Zipper a b
+mapFocus f (Zipper hs a) = Zipper hs (f a)
+
+traverseFocus :: Functor f => (b -> f b) -> Zipper a b -> f (Zipper a b)
+traverseFocus f (Zipper hs a) = Zipper hs <$> f a
+
 toZipper :: a -> Zipper a a
 toZipper a = Zipper Nil a
 
