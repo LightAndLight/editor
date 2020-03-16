@@ -108,6 +108,7 @@ data MenuAction a where
 
   DeleteTerm :: Path a (Term ty tm) -> MenuAction a
   DeleteType :: Path a (Type ty) -> MenuAction a
+  DeleteName :: Path a Name -> MenuAction a
 
   Other :: Text -> MenuAction a
 
@@ -127,8 +128,9 @@ renderMenuAction selected action =
     InsertTForall{} -> item "∀x. _"
     InsertTVar{} -> item "type variable"
     Annotate{} -> item "□ : _"
-    DeleteTerm{} -> item "_"
-    DeleteType{} -> item "_"
+    DeleteTerm{} -> item "delete term"
+    DeleteType{} -> item "delete type"
+    DeleteName{} -> item "delete name"
     Other str -> item str
   where
     item x = do
@@ -448,6 +450,14 @@ runAction action es =
           { _esSelection = Focus.Selection newPath
           , _esContent = new
           }
+    DeleteName path ->
+      case Edit.edit path TargetName Edit.DeleteName (_esContent es) of
+        Left err -> Debug.traceShow err es
+        Right (newPath, _, new) ->
+          es
+          { _esSelection = Focus.Selection newPath
+          , _esContent = new
+          }
     Other{} -> es
 
 infoItem :: DomBuilder t m => Text -> Text -> m ()
@@ -572,10 +582,10 @@ app =
                       case targetInfo @x of
                         TargetTerm -> Just [DeleteTerm path]
                         TargetType -> Just [DeleteType path]
+                        TargetName -> Just [DeleteName path]
                         TargetDecl -> Nothing
                         TargetDeclBody -> Nothing
                         TargetDecls -> Nothing
-                        TargetName -> Nothing
                 )
                 ((,) <$> current dMenuOpen <*> current dSelection)
                 (_iDelete inputs)

@@ -226,7 +226,7 @@ viewType ::
   m (NodeInfo t a)
 viewType nameTy dmSelection path ty =
   viewNode
-    (\case; Syntax.TVar{} -> True; Syntax.THole -> True; _ -> False)
+    (\case; Syntax.TVar{} -> True; Syntax.TName{} -> True; Syntax.THole -> True; _ -> False)
     dmSelection
     path
     (viewTypeChildren nameTy dmSelection path)
@@ -447,7 +447,7 @@ viewTerm ::
   m (NodeInfo t a)
 viewTerm nameTy name dmSelection path tm =
   viewNode
-    (\case; Syntax.Var{} -> True; Syntax.Hole -> True; _ -> False)
+    (\case; Syntax.Var{} -> True; Syntax.Name{} -> True; Syntax.Hole -> True; _ -> False)
     dmSelection
     path
     (viewTermChildren nameTy name dmSelection path)

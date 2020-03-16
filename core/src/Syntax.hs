@@ -6,7 +6,7 @@
 module Syntax where
 
 import Bound ((>>>=), Scope)
-import Bound.Scope (bitraverseScope, instantiateEither)
+import Bound.Scope (bitraverseScope, hoistScope, instantiateEither)
 import qualified Bound
 import Bound.TH (makeBound)
 import Bound.Var (unvar)
@@ -163,6 +163,20 @@ instance Bitraversable Term where
       LamAnn n ty body ->
         LamAnn n <$> traverse f ty <*> bitraverseScope f g body
 
+bindTermTy ::
+  (ty -> Type ty') ->
+  Term ty tm ->
+  Term ty' tm
+bindTermTy f tm =
+  case tm of
+    Hole -> Hole
+    Var a -> Var a
+    Name a -> Name a
+    App a b -> App (bindTermTy f a) (bindTermTy f b)
+    Ann a b -> Ann (bindTermTy f a) (b >>= f)
+    Lam n body -> Lam n (hoistScope (bindTermTy f) body)
+    LamAnn n ty body -> LamAnn n (ty >>= f) (hoistScope (bindTermTy f) body)
+
 _Lam :: Text -> Maybe (Type ty) -> Term ty (Bound.Var () a) -> Term ty a
 _Lam x mty =
   case mty of
@@ -238,6 +252,19 @@ printType nameTy ty =
 data DeclBody ty tm
   = Done (Type ty) (Term ty tm)
   | Forall Name (DeclBody (Bound.Var () ty) tm)
+
+bindDeclBodyTy ::
+  (ty -> Type ty') ->
+  DeclBody ty tm ->
+  DeclBody ty' tm
+bindDeclBodyTy f (Done ty tm) = Done (ty >>= f) (bindTermTy f tm)
+bindDeclBodyTy f (Forall n body) =
+  Forall
+    n
+    (bindDeclBodyTy
+       (unvar (\() -> TVar $ Bound.B ()) (fmap Bound.F . f))
+       body
+    )
 
 data Decl
   = Decl

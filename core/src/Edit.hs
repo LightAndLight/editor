@@ -5,6 +5,7 @@
 module Edit where
 
 import qualified Bound
+import Bound.Var (unvar)
 import Control.Monad.Trans (lift)
 import Data.Bifunctor (first)
 import qualified Data.Vector as Vector
@@ -13,6 +14,7 @@ import Syntax (Name, Term, Type)
 import qualified Syntax
 import Path (Path, TargetInfo(..), HasTargetInfo, targetInfo)
 import qualified Path
+import qualified Zipper
 
 data Action a b where
   InsertTerm :: Term ty a -> Path (Term ty a) b -> Action (Term ty a) b
@@ -22,17 +24,22 @@ data Action a b where
     Path (Term ty a) b ->
     Action (Term ty a) b
   DeleteTerm :: Action (Term ty a) (Term ty a)
-  ModifyName :: (Name -> Name) -> Action Name Name
+
   InsertType :: Type a -> Path (Type a) b -> Action (Type a) b
   InsertTForall :: Name -> Action (Type a) Name
   InsertTVar :: Name -> Action (Type ty) (Type ty)
   DeleteType :: Action (Type a) (Type a)
 
+  ModifyName :: (Name -> Name) -> Action Name Name
+  DeleteName :: Action Name Name
+
 data EditError where
   InvalidPath :: Path a b -> a -> EditError
+  Can'tDeleteName :: Path a Name -> a -> EditError
 
 instance Show EditError where
   show (InvalidPath p _) = "InvalidPath: " <> show p
+  show (Can'tDeleteName p _) = "Can'tDeleteName: " <> show p
 
 edit ::
   forall src tgt tgt'.
@@ -123,6 +130,33 @@ edit path TargetName action a =
       case Path.modify path f a of
         Nothing -> Left $ InvalidPath path a
         Just a' -> Right (path, TargetName, a')
+    DeleteName ->
+      case Path.viewr path of
+        Path.EmptyR -> Left $ Can'tDeleteName path a
+        ps Path.:> p ->
+          case p of
+            Path.LamArg -> Left $ Can'tDeleteName path a
+            Path.LamAnnArg -> Left $ Can'tDeleteName path a
+            Path.TForallArg -> Left $ Can'tDeleteName path a
+            Path.DName -> Left $ Can'tDeleteName path a
+            Path.DBForallArg ->
+              case Path.viewr ps of
+                ps' Path.:> Path.DBForallBody -> do
+                  z <- maybe (Left $ InvalidPath path a) pure (Zipper.downTo ps $ Zipper.toZipper a)
+                  z' <-
+                    Zipper.traverseFocus
+                      (\case
+                          Syntax.Forall n body ->
+                            pure $ Syntax.bindDeclBodyTy (unvar (\() -> Syntax.TName n) pure) body
+                          _ -> Left $ InvalidPath path a
+                      )
+                    z
+                  pure
+                    ( Path.snoc ps' Path.DBForallArg
+                    , TargetName
+                    , Zipper.fromZipper z'
+                    )
+                _ -> Left $ Can'tDeleteName path a
 edit path TargetType action a =
   case action of
     InsertType ty suffix ->
