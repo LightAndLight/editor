@@ -1,4 +1,4 @@
-# Revision history for editor
+# Revision history for webui
 
 ## 0.1.0.0 -- YYYY-mm-dd
 
