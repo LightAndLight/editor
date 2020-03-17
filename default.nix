@@ -5,12 +5,13 @@
 
   packages = {
     core = ./core;
+    editor = ./editor;
     webui = ./webui;
   };
 
   shells = {
-    ghc = ["core" "webui"];
-    ghcjs = ["core" "webui"];
+    ghc = ["core" "editor" "webui"];
+    ghcjs = ["core" "editor" "webui"];
   };
 
   overrides = self: super: {

@@ -9,4 +9,7 @@ case $1 in
 	"core")
 		cd core
 		ghcid -c "cabal new-repl" ;;
+	"editor")
+		cd editor
+		ghcid -c "cabal new-repl" ;;
 esac
