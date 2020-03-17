@@ -19,6 +19,8 @@ library
   exposed-modules:     Editor
   build-depends:       base ^>=4.11.0.0
                      , core
+                     , dependent-map
+                     , dependent-sum
                      , reflex >=0.5
                      , transformers
                      , vector

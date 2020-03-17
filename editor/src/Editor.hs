@@ -8,6 +8,9 @@ module Editor (EditorInit(..), EditorControls(..), Editor(..), editor) where
 
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Trans.Class (lift)
+import qualified Data.Dependent.Map as DMap
+import Data.Dependent.Sum ((==>))
+import Data.GADT.Compare (GEq(..), GCompare(..), (:~:)(..), GOrdering(..))
 import Data.Vector (Vector)
 import Reflex
 
@@ -74,6 +77,28 @@ data Action a
   = ChangeSelection (ChangeSelection a)
   | ChangeCode (AtPath (Choice ChangeCode) a)
 
+data KUpdate a b where
+  KSelection :: KUpdate a (Selection a)
+  KCode :: KUpdate a a
+instance GEq (KUpdate a) where
+  geq KSelection a =
+    case a of
+      KSelection -> Just Refl
+      _ -> Nothing
+  geq KCode a =
+    case a of
+      KCode -> Just Refl
+      _ -> Nothing
+instance GCompare (KUpdate a) where
+  gcompare KSelection KSelection = GEQ
+  gcompare KSelection _ = GLT
+  gcompare _ KSelection = GGT
+
+  gcompare KCode KCode = GEQ
+  gcompare KCode _ = GLT
+  gcompare _ KCode = GGT
+
+
 data EditorControls t a
   = EditorControls
   { _ecAction :: Event t (Action a)
@@ -117,30 +142,39 @@ editor initial controls = do
     eAction = _ecAction controls
   rec
     let
-      eRunChange :: Event t (Maybe (Selection a), Maybe a)
-      eRunChange =
+      update :: EventSelector t (KUpdate a)
+      update =
+        fan $
         (\sel code change ->
           case change of
             ChangeSelection changeSel ->
-              (runChangeSelection changeSel sel code, Nothing)
+              case runChangeSelection changeSel sel code of
+                Nothing -> mempty
+                Just sel' ->
+                  DMap.fromList
+                  [ KSelection ==> sel'
+                  ]
             ChangeCode (AtPath path (Choice arg changeCode)) ->
-              let
-                res = runChangeCode (AtPath path changeCode) arg code
-              in
-                ((\(a, _) -> a) <$> res, (\(_, a) -> a) <$> res)
+              case runChangeCode (AtPath path changeCode) arg code of
+                Nothing -> mempty
+                Just (sel', code') ->
+                  DMap.fromList
+                  [ KSelection ==> sel'
+                  , KCode ==> code'
+                  ]
         ) <$>
         current dSelection <*>
         current dCode <@>
         eAction
 
-      eChangeCode :: Event t a
-      eChangeCode = fmapMaybe (\(_, a) -> a) eRunChange
+      eUpdateCode :: Event t a
+      eUpdateCode = select update KCode
 
-      eChangeSelection :: Event t (Selection a)
-      eChangeSelection = fmapMaybe (\(a, _) -> a) eRunChange
+      eUpdateSelection :: Event t (Selection a)
+      eUpdateSelection = select update KSelection
 
-    dSelection <- holdDyn (Selection Path.empty) eChangeSelection
-    dCode <- holdDyn (_eiCode initial) eChangeCode
+    dSelection <- holdDyn (Selection Path.empty) eUpdateSelection
+    dCode <- holdDyn (_eiCode initial) eUpdateCode
 
   pure $
     Editor
