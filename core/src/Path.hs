@@ -145,121 +145,121 @@ eqP (Decl n) a =
     Decl n' | n == n' -> Just Refl
     _ -> Nothing
 
-matchP :: P a b -> a -> Maybe (b, b -> a)
+matchP :: P a b -> a -> Maybe (Target b, b, b -> a)
 matchP p a =
   case p of
     AppL ->
       case a of
         Syntax.App x y ->
-          Just (x, \x' -> Syntax.App x' y)
+          Just (target, x, \x' -> Syntax.App x' y)
         _ -> Nothing
     AppR ->
       case a of
         Syntax.App x y ->
-          Just (y, \y' -> Syntax.App x y')
+          Just (target, y, \y' -> Syntax.App x y')
         _ -> Nothing
     AnnL ->
       case a of
         Syntax.Ann x y ->
-          Just (x, \x' -> Syntax.Ann x' y)
+          Just (target, x, \x' -> Syntax.Ann x' y)
         _ -> Nothing
     AnnR ->
       case a of
         Syntax.Ann x y ->
-          Just (y, \y' -> Syntax.Ann x y')
+          Just (target, y, \y' -> Syntax.Ann x y')
         _ -> Nothing
     LamArg ->
       case a of
         Syntax.Lam n x ->
-          Just (n, \n' -> Syntax.Lam n' x)
+          Just (target, n, \n' -> Syntax.Lam n' x)
         _ -> Nothing
     LamBody ->
       case a of
         Syntax.Lam n x ->
-          Just (Bound.fromScope x, Syntax.Lam n . Bound.toScope)
+          Just (target, Bound.fromScope x, Syntax.Lam n . Bound.toScope)
         _ -> Nothing
     LamAnnArg ->
       case a of
         Syntax.LamAnn n ty x ->
-          Just (n, \n' -> Syntax.LamAnn n' ty x)
+          Just (target, n, \n' -> Syntax.LamAnn n' ty x)
         _ -> Nothing
     LamAnnType ->
       case a of
         Syntax.LamAnn n ty x ->
-          Just (ty, \ty' -> Syntax.LamAnn n ty' x)
+          Just (target, ty, \ty' -> Syntax.LamAnn n ty' x)
         _ -> Nothing
     LamAnnBody ->
       case a of
         Syntax.LamAnn n ty x ->
-          Just (Bound.fromScope x, Syntax.LamAnn n ty . Bound.toScope)
+          Just (target, Bound.fromScope x, Syntax.LamAnn n ty . Bound.toScope)
         _ -> Nothing
     TArrL ->
       case a of
         Syntax.TArr x y ->
-          Just (x, \x' -> Syntax.TArr x' y)
+          Just (target, x, \x' -> Syntax.TArr x' y)
         _ -> Nothing
     TArrR ->
       case a of
         Syntax.TArr x y ->
-          Just (y, \y' -> Syntax.TArr x y')
+          Just (target, y, \y' -> Syntax.TArr x y')
         _ -> Nothing
     TForallArg ->
       case a of
         Syntax.TForall n x ->
-          Just (n, \n' -> Syntax.TForall n' x)
+          Just (target, n, \n' -> Syntax.TForall n' x)
         _ -> Nothing
     TForallBody ->
       case a of
         Syntax.TForall n x ->
-          Just (Bound.fromScope x, Syntax.TForall n . Bound.toScope)
+          Just (target, Bound.fromScope x, Syntax.TForall n . Bound.toScope)
         _ -> Nothing
     TUnsolvedBody ->
       case a of
         Syntax.TUnsolved ns x ->
-          Just (Bound.fromScope x, Syntax.TUnsolved ns . Bound.toScope)
+          Just (target, Bound.fromScope x, Syntax.TUnsolved ns . Bound.toScope)
         _ -> Nothing
     TSubstL ->
       case a of
         Syntax.TSubst x y ->
-          Just (x, \x' -> Syntax.TSubst x' y)
+          Just (target, x, \x' -> Syntax.TSubst x' y)
         _ -> Nothing
     TSubstR n ->
       case a of
         Syntax.TSubst x y ->
-          Just (y Vector.! n, \e' -> Syntax.TSubst x (y Vector.// [(n, e')]))
+          Just (target, y Vector.! n, \e' -> Syntax.TSubst x (y Vector.// [(n, e')]))
         _ -> Nothing
     DName ->
       case a of
         Syntax.Decl n body ->
-          Just (n, \n' -> Syntax.Decl n' body)
+          Just (target, n, \n' -> Syntax.Decl n' body)
     DBody ->
       case a of
         Syntax.Decl n body ->
-          Just (body, \body' -> Syntax.Decl n body')
+          Just (target, body, \body' -> Syntax.Decl n body')
     DBType ->
       case a of
         Syntax.Done ty tm ->
-          Just (ty, \ty' -> Syntax.Done ty' tm)
+          Just (target, ty, \ty' -> Syntax.Done ty' tm)
         _ -> Nothing
     DBTerm ->
       case a of
         Syntax.Done ty tm ->
-          Just (tm, \tm' -> Syntax.Done ty tm')
+          Just (target, tm, \tm' -> Syntax.Done ty tm')
         _ -> Nothing
     DBForallArg ->
       case a of
         Syntax.Forall n body ->
-          Just (n, \n' -> Syntax.Forall n' body)
+          Just (target, n, \n' -> Syntax.Forall n' body)
         _ ->Nothing
     DBForallBody ->
       case a of
         Syntax.Forall n body ->
-          Just (body, \body' -> Syntax.Forall n body')
+          Just (target, body, \body' -> Syntax.Forall n body')
         _ -> Nothing
     Decl n ->
       case a of
         Syntax.Decls ds ->
-          Just (ds Vector.! n, \x -> Syntax.Decls $ ds Vector.// [(n, x)])
+          Just (target, ds Vector.! n, \x -> Syntax.Decls $ ds Vector.// [(n, x)])
 
 data Digit f a b where
   One :: f a b -> Digit f a b
@@ -459,23 +459,23 @@ viewr s =
         Three a b c -> Deep l m (Two a b) :> c
         Four a b c d -> Deep l m (Three a b c) :> d
 
-data TargetInfo b where
-  TargetTerm :: TargetInfo (Term ty v)
-  TargetType :: TargetInfo (Type v)
-  TargetDecl :: TargetInfo Decl
-  TargetDeclBody :: TargetInfo (DeclBody ty tm)
-  TargetDecls :: TargetInfo Decls
-  TargetName :: TargetInfo Name
+data Target b where
+  TargetTerm :: Target (Term ty v)
+  TargetType :: Target (Type v)
+  TargetDecl :: Target Decl
+  TargetDeclBody :: Target (DeclBody ty tm)
+  TargetDecls :: Target Decls
+  TargetName :: Target Name
 
-class HasTargetInfo a where
-  targetInfo :: TargetInfo a
+class KnownTarget a where
+  target :: Target a
 
-instance HasTargetInfo (Term ty tm) where; targetInfo = TargetTerm
-instance HasTargetInfo (Type ty) where; targetInfo = TargetType
-instance HasTargetInfo Name where; targetInfo = TargetName
-instance HasTargetInfo Decl where; targetInfo = TargetDecl
-instance HasTargetInfo (DeclBody ty tm) where; targetInfo = TargetDeclBody
-instance HasTargetInfo Decls where; targetInfo = TargetDecls
+instance KnownTarget (Term ty tm) where; target = TargetTerm
+instance KnownTarget (Type ty) where; target = TargetType
+instance KnownTarget Name where; target = TargetName
+instance KnownTarget Decl where; target = TargetDecl
+instance KnownTarget (DeclBody ty tm) where; target = TargetDeclBody
+instance KnownTarget Decls where; target = TargetDecls
 
 type Path = Seq P
 
@@ -494,29 +494,6 @@ eqPath pa pb =
           Refl <- eqPath as bs
           pure Refl
 
-{-
-targetInfo :: Path a b -> Either (a :~: b) (TargetInfo b)
-targetInfo ps =
-  case viewr ps of
-    EmptyR -> Left Refl
-    _ :> p ->
-      Right $
-      case p of
-        AppL -> TargetTerm
-        AppR -> TargetTerm
-        Var -> undefined
-        LamArg -> TargetName
-        LamBody -> TargetTerm
-        LamAnnArg -> TargetName
-        LamAnnType -> TargetType
-        LamAnnBody -> TargetTerm
-        TVar -> undefined
-        TForallArg -> TargetName
-        TForallBody -> TargetType
-        TArrL -> TargetType
-        TArrR -> TargetType
--}
-
 modifyA ::
   Path a b ->
   forall f. Applicative f => (b -> f b) -> a -> f (Maybe a)
@@ -526,7 +503,7 @@ modifyA path f a =
     p :< ps ->
       case matchP p a of
         Nothing -> pure Nothing
-        Just (x, re) ->
+        Just (_, x, re) ->
           (fmap.fmap) re $
           modifyA ps f x
 

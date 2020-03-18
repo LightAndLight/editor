@@ -7,18 +7,18 @@ import qualified Bound
 import Control.Lens.Indexed (ifoldl, ifoldr)
 import qualified Data.Vector as Vector
 
-import Path (P(..), Path, TargetInfo(..), HasTargetInfo, targetInfo)
+import Path (P(..), Path, Target(..), KnownTarget, target)
 import qualified Path
 import qualified Syntax
 
 data Branch a where
-  Branch :: HasTargetInfo b => Path a b -> b -> Branch a
+  Branch :: KnownTarget b => Path a b -> b -> Branch a
 
 data Selection a where
-  Selection :: HasTargetInfo b => Path a b -> Selection a
+  Selection :: KnownTarget b => Path a b -> Selection a
 deriving instance Show (Selection a)
 
-nextHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
+nextHole :: KnownTarget b => Path a b -> a -> Maybe (Selection a)
 nextHole = goDown Path.empty []
   where
     continue :: forall x. [Branch x] -> Maybe (Selection x)
@@ -29,13 +29,13 @@ nextHole = goDown Path.empty []
 
     search ::
       forall x a.
-      HasTargetInfo a =>
+      KnownTarget a =>
       Path x a ->
       [Branch x] ->
       a ->
       Maybe (Selection x)
     search prefix bs val =
-      case targetInfo @a of
+      case target @a of
         TargetDecls ->
           case val of
             Syntax.Decls ds ->
@@ -138,7 +138,7 @@ nextHole = goDown Path.empty []
 
     goDown ::
       forall x a b.
-      HasTargetInfo b =>
+      KnownTarget b =>
       Path x a ->
       [Branch x] ->
       Path a b ->
@@ -345,7 +345,7 @@ nextHole = goDown Path.empty []
                     val'
                 _ -> Nothing
 
-prevHole :: HasTargetInfo b => Path a b -> a -> Maybe (Selection a)
+prevHole :: KnownTarget b => Path a b -> a -> Maybe (Selection a)
 prevHole = goDown Path.empty []
   where
     continue :: forall x. [Branch x] -> Maybe (Selection x)
@@ -356,13 +356,13 @@ prevHole = goDown Path.empty []
 
     search ::
       forall x a.
-      HasTargetInfo a =>
+      KnownTarget a =>
       Path x a ->
       [Branch x] ->
       a ->
       Maybe (Selection x)
     search prefix bs val =
-      case targetInfo @a of
+      case target @a of
         TargetDecls ->
           case val of
             Syntax.Decls ds ->
@@ -465,7 +465,7 @@ prevHole = goDown Path.empty []
 
     goDown ::
       forall x a b.
-      HasTargetInfo b =>
+      KnownTarget b =>
       Path x a ->
       [Branch x] ->
       Path a b ->

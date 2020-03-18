@@ -12,13 +12,12 @@ import qualified Data.Vector as Vector
 
 import Syntax (Name, Term, Type)
 import qualified Syntax
-import Path (Path, TargetInfo(..), HasTargetInfo, targetInfo)
+import Path (Path, Target(..), KnownTarget, target)
 import qualified Path
 import qualified Zipper
 
 data Action a b where
   InsertTerm :: Term ty a -> Path (Term ty a) b -> Action (Term ty a) b
-  InsertVar :: Name -> Action (Term ty tm) (Term ty tm)
   ModifyTerm ::
     (Term ty a -> Term ty a) ->
     Path (Term ty a) b ->
@@ -43,12 +42,12 @@ instance Show EditError where
 
 edit ::
   forall src tgt tgt'.
-  (HasTargetInfo src, HasTargetInfo tgt') =>
+  (KnownTarget src, KnownTarget tgt') =>
   Path src tgt ->
-  TargetInfo tgt ->
+  Target tgt ->
   Action tgt tgt' ->
   src ->
-  Either EditError (Path src tgt', TargetInfo tgt', src)
+  Either EditError (Path src tgt', Target tgt', src)
 edit _ TargetDecls action _ = case action of
 edit _ TargetDecl action _ = case action of
 edit _ TargetDeclBody action _ = case action of
@@ -59,65 +58,11 @@ edit path TargetTerm action a =
     InsertTerm tm suffix ->
       case Path.set path tm a of
         Nothing -> Left $ InvalidPath path a
-        Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
-    InsertVar n ->
-      case targetInfo @src of
-        TargetTerm ->
-          case insertVar path n a of
-            Nothing -> Left $ InvalidPath path a
-            Just a'' -> Right (path, TargetTerm, a'')
-        TargetType -> Left $ InvalidPath path a
-        TargetName -> Left $ InvalidPath path a
-        TargetDecls ->
-          case Path.viewl path of
-            Path.Decl ix Path.:< ps ->
-              case a of
-                Syntax.Decls ds -> do
-                  (ps', ti', d') <- edit ps TargetTerm action (ds Vector.! ix)
-                  pure
-                    ( Path.cons (Path.Decl ix) ps'
-                    , ti'
-                    , Syntax.Decls $ ds Vector.// [(ix, d')]
-                    )
-        TargetDecl ->
-          case Path.viewl path of
-            Path.DBody Path.:< ps ->
-              case a of
-                Syntax.Decl name body -> do
-                  (ps', ti', tm') <- edit ps TargetTerm action body
-                  pure
-                    ( Path.cons Path.DBody ps'
-                    , ti'
-                    , Syntax.Decl name tm'
-                    )
-            _ -> Left $ InvalidPath path a
-        TargetDeclBody ->
-          case Path.viewl path of
-            Path.DBTerm Path.:< ps ->
-              case a of
-                Syntax.Done ty tm -> do
-                  (ps', ti', tm') <- edit ps TargetTerm action tm
-                  pure
-                    ( Path.cons Path.DBTerm ps'
-                    , ti'
-                    , Syntax.Done ty tm'
-                    )
-                _ -> Left $ InvalidPath path a
-            Path.DBForallBody Path.:< ps ->
-              case a of
-                Syntax.Forall name body -> do
-                  (ps', ti', body') <- edit ps TargetTerm action body
-                  pure
-                    ( Path.cons Path.DBForallBody ps'
-                    , ti'
-                    , Syntax.Forall name body'
-                    )
-                _ -> Left $ InvalidPath path a
-            _ -> Left $ InvalidPath path a
+        Just a' -> Right (Path.append path suffix, target @tgt', a')
     ModifyTerm f suffix ->
       case Path.modify path f a of
         Nothing -> Left $ InvalidPath path a
-        Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
+        Just a' -> Right (Path.append path suffix, target @tgt', a')
     DeleteTerm ->
       case Path.set path Syntax.Hole a of
         Nothing -> Left $ InvalidPath path a
@@ -162,11 +107,11 @@ edit path TargetType action a =
     InsertType ty suffix ->
       case Path.set path ty a of
         Nothing -> Left $ InvalidPath path a
-        Just a' -> Right (Path.append path suffix, targetInfo @tgt', a')
+        Just a' -> Right (Path.append path suffix, target @tgt', a')
     InsertTForall name ->
       case insertTForall path name a of
         Nothing -> Left $ InvalidPath path a
-        Just (path', a') -> Right (path', targetInfo @tgt', a')
+        Just (path', a') -> Right (path', target @tgt', a')
     InsertTVar name ->
       case insertTVar path name a of
         Nothing -> Left $ InvalidPath path a
@@ -178,13 +123,13 @@ edit path TargetType action a =
 
 insertTForall ::
   forall a ty'.
-  HasTargetInfo a =>
+  KnownTarget a =>
   Path a (Type ty') ->
   Name ->
   a ->
   Maybe (Path a Name, a)
 insertTForall =
-  case targetInfo @a of
+  case target @a of
     TargetTerm -> insertTForall_Term
     TargetType -> insertTForall_Type
     TargetDeclBody -> insertTForall_DeclBody
@@ -222,7 +167,7 @@ insertTForall =
             Path.DBType ->
               case Path.viewl ps of
                 _ Path.:< _ -> do
-                  (a', mk) <- Path.matchP Path.DBType a
+                  (_, a', mk) <- Path.matchP Path.DBType a
                   (path', a'') <- insertTForall_Type ps n a'
                   pure (Path.cons Path.DBType path', mk a'')
                 Path.EmptyL ->
@@ -234,12 +179,12 @@ insertTForall =
                         )
                     _ -> Nothing
             Path.DBTerm -> do
-              (a', mk) <- Path.matchP Path.DBTerm a
+              (_, a', mk) <- Path.matchP Path.DBTerm a
               (path', a'') <- insertTForall_Term ps n a'
               pure (Path.cons Path.DBTerm path', mk a'')
             Path.DBForallArg -> Nothing
             Path.DBForallBody -> do
-              (a', mk) <- Path.matchP Path.DBForallBody a
+              (_, a', mk) <- Path.matchP Path.DBForallBody a
               (path', a'') <- insertTForall_DeclBody ps n a'
               pure (Path.cons Path.DBForallBody path', mk a'')
 
@@ -253,7 +198,7 @@ insertTForall =
         p Path.:< ps ->
           case p of
             Path.DBody -> do
-              (a', mk) <- Path.matchP Path.DBody a
+              (_, a', mk) <- Path.matchP Path.DBody a
               (path', a'') <- insertTForall_DeclBody ps n a'
               pure (Path.cons Path.DBody path', mk a'')
             Path.DName -> Nothing
@@ -268,19 +213,19 @@ insertTForall =
         p Path.:< ps ->
           case p of
             Path.Decl ix -> do
-              (a', mk) <- Path.matchP (Path.Decl ix) a
+              (_, a', mk) <- Path.matchP (Path.Decl ix) a
               (path', a'') <- insertTForall_Decl ps n a'
               pure (Path.cons (Path.Decl ix) path', mk a'')
 
 insertTVar ::
   forall a ty'.
-  HasTargetInfo a =>
+  KnownTarget a =>
   Path a (Type ty') ->
   Name ->
   a ->
   Maybe a
 insertTVar =
-  case targetInfo @a of
+  case target @a of
     TargetName -> \_ _ _ -> Nothing
     TargetType -> goType Syntax.TName
     TargetTerm -> goTerm Syntax.TName
@@ -298,7 +243,7 @@ insertTVar =
         p Path.:< ps ->
           case p of
             Path.Decl ix -> do
-              (a', mk) <- Path.matchP (Path.Decl ix) ds
+              (_, a', mk) <- Path.matchP (Path.Decl ix) ds
               mk <$> goDecl ps n a'
 
     goDecl ::
@@ -312,7 +257,7 @@ insertTVar =
           case p of
             Path.DName -> Nothing
             Path.DBody -> do
-              (a', mk) <- Path.matchP Path.DBody d
+              (_, a', mk) <- Path.matchP Path.DBody d
               mk <$> goDeclBody Syntax.TName ps n a'
 
     goType ::
@@ -357,16 +302,16 @@ insertTVar =
                     (Bound.fromScope body)
                 _ -> Nothing
             Path.TArrL -> do
-              (ty', mk) <- Path.matchP Path.TArrL a
+              (_, ty', mk) <- Path.matchP Path.TArrL a
               mk <$> goType mkTy ps n ty'
             Path.TArrR -> do
-              (ty', mk) <- Path.matchP Path.TArrR a
+              (_, ty', mk) <- Path.matchP Path.TArrR a
               mk <$> goType mkTy ps n ty'
             Path.TSubstL -> do
-              (ty', mk) <- Path.matchP Path.TSubstL a
+              (_, ty', mk) <- Path.matchP Path.TSubstL a
               mk <$> goType mkTy ps n ty'
             Path.TSubstR ix -> do
-              (ty', mk) <- Path.matchP (Path.TSubstR ix) a
+              (_, ty', mk) <- Path.matchP (Path.TSubstR ix) a
               mk <$> goType mkTy ps n ty'
 
     goDeclBody ::
@@ -395,10 +340,10 @@ insertTVar =
                     body
                 _ -> Nothing
             Path.DBTerm -> do
-              (tm', mk) <- Path.matchP Path.DBTerm a
+              (_, tm', mk) <- Path.matchP Path.DBTerm a
               mk <$> goTerm mkTy ps n tm'
             Path.DBType -> do
-              (ty', mk) <- Path.matchP Path.DBType a
+              (_, ty', mk) <- Path.matchP Path.DBType a
               mk <$> goType mkTy ps n ty'
 
     goTerm ::
@@ -412,25 +357,25 @@ insertTVar =
         p Path.:< ps ->
           case p of
             Path.AppL -> do
-              (tm', mk) <- Path.matchP Path.AppL tm
+              (_, tm', mk) <- Path.matchP Path.AppL tm
               mk <$> goTerm mkTy ps n tm'
             Path.AppR -> do
-              (tm', mk) <- Path.matchP Path.AppR tm
+              (_, tm', mk) <- Path.matchP Path.AppR tm
               mk <$> goTerm mkTy ps n tm'
             Path.LamArg -> Nothing
             Path.LamBody -> do
-              (tm', mk) <- Path.matchP Path.LamBody tm
+              (_, tm', mk) <- Path.matchP Path.LamBody tm
               mk <$> goTerm mkTy ps n tm'
             Path.LamAnnArg -> Nothing
             Path.LamAnnType -> do
-              (ty, mk) <- Path.matchP Path.LamAnnType tm
+              (_, ty, mk) <- Path.matchP Path.LamAnnType tm
               mk <$> goType mkTy ps n ty
             Path.LamAnnBody -> do
-              (tm', mk) <- Path.matchP Path.LamAnnBody tm
+              (_, tm', mk) <- Path.matchP Path.LamAnnBody tm
               mk <$> goTerm mkTy ps n tm'
             Path.AnnL -> do
-              (tm', mk) <- Path.matchP Path.AnnL tm
+              (_, tm', mk) <- Path.matchP Path.AnnL tm
               mk <$> goTerm mkTy ps n tm'
             Path.AnnR -> do
-              (ty, mk) <- Path.matchP Path.AnnR tm
+              (_, ty, mk) <- Path.matchP Path.AnnR tm
               mk <$> goType mkTy ps n ty

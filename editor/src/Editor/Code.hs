@@ -7,70 +7,68 @@ module Editor.Code where
 import qualified Bound
 import qualified Data.Vector as Vector
 
-import Path (HasTargetInfo, Path, TargetInfo(..), targetInfo)
+import Path (KnownTarget, Path, Target(..), target)
 import qualified Path
 import Syntax (Name, Term, Type)
 import qualified Syntax
+import Zipper (Zipper)
+import qualified Zipper
 
 insertTVar ::
   forall a ty'.
-  HasTargetInfo a =>
+  KnownTarget a =>
   Path a (Type ty') ->
   Name ->
   a ->
   Maybe a
-insertTVar =
-  case targetInfo @a of
-    TargetName -> \_ _ _ -> Nothing
-    TargetType -> goType Syntax.TName
-    TargetTerm -> goTerm Syntax.TName
-    TargetDecl -> goDecl
-    TargetDecls -> goDecls
-    TargetDeclBody -> goDeclBody Syntax.TName
+insertTVar path_ n_ a_ =
+  let z = Zipper.toZipper a_ in
+  case Zipper._target z of
+    TargetName -> Nothing
+    TargetType -> goType Syntax.TName path_ n_ z
+    TargetTerm -> goTerm Syntax.TName path_ n_ z
+    TargetDecl -> goDecl path_ n_ z
+    TargetDecls -> goDecls path_ n_ z
+    TargetDeclBody -> goDeclBody Syntax.TName path_ n_ z
   where
     goDecls ::
       Path Syntax.Decls (Type ty') ->
       Name ->
-      Syntax.Decls ->
-      Maybe Syntax.Decls
-    goDecls path n ds =
+      Zipper a Syntax.Decls ->
+      Maybe a
+    goDecls path n z =
       case Path.viewl path of
         p Path.:< ps ->
           case p of
-            Path.Decl ix -> do
-              (a', mk) <- Path.matchP (Path.Decl ix) ds
-              mk <$> goDecl ps n a'
+            Path.Decl ix -> goDecl ps n =<< Zipper.down (Path.Decl ix) z
 
     goDecl ::
       Path Syntax.Decl (Type ty') ->
       Name ->
-      Syntax.Decl ->
-      Maybe Syntax.Decl
-    goDecl path n d =
+      Zipper a Syntax.Decl ->
+      Maybe a
+    goDecl path n z =
       case Path.viewl path of
         p Path.:< ps ->
           case p of
             Path.DName -> Nothing
-            Path.DBody -> do
-              (a', mk) <- Path.matchP Path.DBody d
-              mk <$> goDeclBody Syntax.TName ps n a'
+            Path.DBody -> goDeclBody Syntax.TName ps n =<< Zipper.down Path.DBody z
 
     goType ::
       (Name -> Type ty) ->
       Path (Type ty) (Type ty') ->
       Name ->
-      Type ty ->
-      Maybe (Type ty)
-    goType mkTy path n a =
+      Zipper a (Type ty) ->
+      Maybe a
+    goType mkTy path n z =
       case Path.viewl path of
-        Path.EmptyL -> Just $ mkTy n
+        Path.EmptyL -> Just . Zipper.fromZipper $ Zipper.mapFocus (\_ -> mkTy n) z
         p Path.:< ps ->
           case p of
             Path.TForallArg -> Nothing
             Path.TForallBody ->
-              case a of
-                Syntax.TForall n' body ->
-                  Syntax.TForall n' . Bound.toScope <$>
+              case Zipper._focus z of
+                Syntax.TForall n' _ ->
                   goType
                     (\x ->
                        if x == n'
@@ -78,13 +76,12 @@ insertTVar =
                        else Bound.F <$> mkTy x
                     )
                     ps
-                    n
-                    (Bound.fromScope body)
+                    n =<<
+                  Zipper.down Path.TForallBody z
                 _ -> Nothing
             Path.TUnsolvedBody ->
-              case a of
-                Syntax.TUnsolved ns body ->
-                  Syntax.TUnsolved ns . Bound.toScope <$>
+              case Zipper._focus z of
+                Syntax.TUnsolved ns _ ->
                   goType
                     (\x ->
                        maybe
@@ -93,37 +90,28 @@ insertTVar =
                          (Vector.findIndex ((x ==) . fst) ns)
                     )
                     ps
-                    n
-                    (Bound.fromScope body)
+                    n =<<
+                  Zipper.down Path.TUnsolvedBody z
                 _ -> Nothing
-            Path.TArrL -> do
-              (ty', mk) <- Path.matchP Path.TArrL a
-              mk <$> goType mkTy ps n ty'
-            Path.TArrR -> do
-              (ty', mk) <- Path.matchP Path.TArrR a
-              mk <$> goType mkTy ps n ty'
-            Path.TSubstL -> do
-              (ty', mk) <- Path.matchP Path.TSubstL a
-              mk <$> goType mkTy ps n ty'
-            Path.TSubstR ix -> do
-              (ty', mk) <- Path.matchP (Path.TSubstR ix) a
-              mk <$> goType mkTy ps n ty'
+            Path.TArrL -> goType mkTy ps n =<< Zipper.down Path.TArrL z
+            Path.TArrR -> goType mkTy ps n =<< Zipper.down Path.TArrR z
+            Path.TSubstL -> goType mkTy ps n =<< Zipper.down Path.TSubstL z
+            Path.TSubstR ix -> goType mkTy ps n =<< Zipper.down (Path.TSubstR ix) z
 
     goDeclBody ::
       (Name -> Type ty) ->
       Path (Syntax.DeclBody ty tm) (Type ty') ->
       Name ->
-      Syntax.DeclBody ty tm ->
-      Maybe (Syntax.DeclBody ty tm)
-    goDeclBody mkTy path n a =
+      Zipper a (Syntax.DeclBody ty tm) ->
+      Maybe a
+    goDeclBody mkTy path n z =
       case Path.viewl path of
         p Path.:< ps ->
           case p of
             Path.DBForallArg -> Nothing
             Path.DBForallBody ->
-              case a of
-                Syntax.Forall n' body ->
-                  Syntax.Forall n' <$>
+              case Zipper._focus z of
+                Syntax.Forall n' _ ->
                   goDeclBody
                     (\x ->
                        if x == n'
@@ -131,59 +119,41 @@ insertTVar =
                        else Bound.F <$> mkTy x
                     )
                     ps
-                    n
-                    body
+                    n =<<
+                  Zipper.down Path.DBForallBody z
                 _ -> Nothing
-            Path.DBTerm -> do
-              (tm', mk) <- Path.matchP Path.DBTerm a
-              mk <$> goTerm mkTy ps n tm'
-            Path.DBType -> do
-              (ty', mk) <- Path.matchP Path.DBType a
-              mk <$> goType mkTy ps n ty'
+            Path.DBTerm -> goTerm mkTy ps n =<< Zipper.down Path.DBTerm z
+            Path.DBType -> goType mkTy ps n =<< Zipper.down Path.DBType z
 
     goTerm ::
       (Name -> Type ty) ->
       Path (Syntax.Term ty tm) (Type ty') ->
       Name ->
-      Syntax.Term ty tm ->
-      Maybe (Syntax.Term ty tm)
+      Zipper a (Syntax.Term ty tm) ->
+      Maybe a
     goTerm mkTy path n tm =
       case Path.viewl path of
         p Path.:< ps ->
           case p of
-            Path.AppL -> do
-              (tm', mk) <- Path.matchP Path.AppL tm
-              mk <$> goTerm mkTy ps n tm'
-            Path.AppR -> do
-              (tm', mk) <- Path.matchP Path.AppR tm
-              mk <$> goTerm mkTy ps n tm'
+            Path.AppL -> goTerm mkTy ps n =<< Zipper.down Path.AppL tm
+            Path.AppR -> goTerm mkTy ps n =<< Zipper.down Path.AppR tm
             Path.LamArg -> Nothing
-            Path.LamBody -> do
-              (tm', mk) <- Path.matchP Path.LamBody tm
-              mk <$> goTerm mkTy ps n tm'
+            Path.LamBody -> goTerm mkTy ps n =<< Zipper.down Path.LamBody tm
             Path.LamAnnArg -> Nothing
-            Path.LamAnnType -> do
-              (ty, mk) <- Path.matchP Path.LamAnnType tm
-              mk <$> goType mkTy ps n ty
-            Path.LamAnnBody -> do
-              (tm', mk) <- Path.matchP Path.LamAnnBody tm
-              mk <$> goTerm mkTy ps n tm'
-            Path.AnnL -> do
-              (tm', mk) <- Path.matchP Path.AnnL tm
-              mk <$> goTerm mkTy ps n tm'
-            Path.AnnR -> do
-              (ty, mk) <- Path.matchP Path.AnnR tm
-              mk <$> goType mkTy ps n ty
+            Path.LamAnnType -> goType mkTy ps n =<< Zipper.down Path.LamAnnType tm
+            Path.LamAnnBody -> goTerm mkTy ps n =<< Zipper.down Path.LamAnnBody tm
+            Path.AnnL -> goTerm mkTy ps n =<< Zipper.down Path.AnnL tm
+            Path.AnnR -> goType mkTy ps n =<< Zipper.down Path.AnnR tm
 
 insertVar ::
   forall a ty' tm'.
-  HasTargetInfo a =>
+  KnownTarget a =>
   Path a (Term ty' tm') ->
   Name ->
   a ->
   Maybe a
 insertVar =
-  case targetInfo @a of
+  case target @a of
     TargetName -> \_ _ _ -> Nothing
     TargetType -> goType Syntax.Name
     TargetTerm -> goTerm Syntax.Name
@@ -201,7 +171,7 @@ insertVar =
         p Path.:< ps ->
           case p of
             Path.Decl ix -> do
-              (a', mk) <- Path.matchP (Path.Decl ix) ds
+              (_, a', mk) <- Path.matchP (Path.Decl ix) ds
               mk <$> goDecl ps n a'
 
     goDecl ::
@@ -215,7 +185,7 @@ insertVar =
           case p of
             Path.DName -> Nothing
             Path.DBody -> do
-              (a', mk) <- Path.matchP Path.DBody d
+              (_, a', mk) <- Path.matchP Path.DBody d
               mk <$> goDeclBody Syntax.Name ps n a'
 
     goType ::
@@ -230,22 +200,22 @@ insertVar =
           case p of
             Path.TForallArg -> Nothing
             Path.TForallBody -> do
-              (ty', mk) <- Path.matchP Path.TForallBody a
+              (_, ty', mk) <- Path.matchP Path.TForallBody a
               mk <$> goType mkTm ps n ty'
             Path.TUnsolvedBody -> do
-              (ty', mk) <- Path.matchP Path.TUnsolvedBody a
+              (_, ty', mk) <- Path.matchP Path.TUnsolvedBody a
               mk <$> goType mkTm ps n ty'
             Path.TArrL -> do
-              (ty', mk) <- Path.matchP Path.TArrL a
+              (_, ty', mk) <- Path.matchP Path.TArrL a
               mk <$> goType mkTm ps n ty'
             Path.TArrR -> do
-              (ty', mk) <- Path.matchP Path.TArrR a
+              (_, ty', mk) <- Path.matchP Path.TArrR a
               mk <$> goType mkTm ps n ty'
             Path.TSubstL -> do
-              (ty', mk) <- Path.matchP Path.TSubstL a
+              (_, ty', mk) <- Path.matchP Path.TSubstL a
               mk <$> goType mkTm ps n ty'
             Path.TSubstR ix -> do
-              (ty', mk) <- Path.matchP (Path.TSubstR ix) a
+              (_, ty', mk) <- Path.matchP (Path.TSubstR ix) a
               mk <$> goType mkTm ps n ty'
 
     goDeclBody ::
@@ -260,13 +230,13 @@ insertVar =
           case p of
             Path.DBForallArg -> Nothing
             Path.DBForallBody -> do
-              (tm', mk) <- Path.matchP Path.DBForallBody a
+              (_, tm', mk) <- Path.matchP Path.DBForallBody a
               mk <$> goDeclBody mkTm ps n tm'
             Path.DBTerm -> do
-              (tm', mk) <- Path.matchP Path.DBTerm a
+              (_, tm', mk) <- Path.matchP Path.DBTerm a
               mk <$> goTerm mkTm ps n tm'
             Path.DBType -> do
-              (ty', mk) <- Path.matchP Path.DBType a
+              (_, ty', mk) <- Path.matchP Path.DBType a
               mk <$> goType mkTm ps n ty'
 
     goTerm ::
@@ -281,10 +251,10 @@ insertVar =
         p Path.:< ps ->
           case p of
             Path.AppL -> do
-              (tm', mk) <- Path.matchP Path.AppL tm
+              (_, tm', mk) <- Path.matchP Path.AppL tm
               mk <$> goTerm mkTm ps n tm'
             Path.AppR -> do
-              (tm', mk) <- Path.matchP Path.AppR tm
+              (_, tm', mk) <- Path.matchP Path.AppR tm
               mk <$> goTerm mkTm ps n tm'
             Path.LamArg -> Nothing
             Path.LamBody -> do
@@ -303,7 +273,7 @@ insertVar =
                 _ -> Nothing
             Path.LamAnnArg -> Nothing
             Path.LamAnnType -> do
-              (ty, mk) <- Path.matchP Path.LamAnnType tm
+              (_, ty, mk) <- Path.matchP Path.LamAnnType tm
               mk <$> goType mkTm ps n ty
             Path.LamAnnBody -> do
               case tm of
@@ -320,8 +290,8 @@ insertVar =
                     (Bound.fromScope body)
                 _ -> Nothing
             Path.AnnL -> do
-              (tm', mk) <- Path.matchP Path.AnnL tm
+              (_, tm', mk) <- Path.matchP Path.AnnL tm
               mk <$> goTerm mkTm ps n tm'
             Path.AnnR -> do
-              (ty, mk) <- Path.matchP Path.AnnR tm
+              (_, ty, mk) <- Path.matchP Path.AnnR tm
               mk <$> goType mkTm ps n ty

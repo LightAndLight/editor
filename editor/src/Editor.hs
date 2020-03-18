@@ -17,7 +17,7 @@ import Reflex
 import Editor.Code
 import Focus (Selection(..))
 import qualified Focus
-import Path (HasTargetInfo, Path, TargetInfo(..), targetInfo)
+import Path (KnownTarget, Path, Target(..), target)
 import qualified Path
 import Syntax (Name, Term, Type)
 import qualified Syntax
@@ -53,7 +53,7 @@ data ChangeCode a b where
   Rename :: ChangeCode Name Name
 
 runChangeCode ::
-  HasTargetInfo a =>
+  KnownTarget a =>
   AtPath (ChangeCode arg) a ->
   arg ->
   a ->
@@ -128,7 +128,7 @@ data Editor t a
 
 changeCodeOptions :: Selection a -> Vector (AtPath (Option ChangeCode) a)
 changeCodeOptions (Selection (path :: Path a x)) =
-  case targetInfo @x of
+  case target @x of
     TargetTerm ->
       [ AtPath path (Option InsertApp)
       , AtPath path (Option InsertLam)
@@ -146,7 +146,7 @@ changeCodeOptions (Selection (path :: Path a x)) =
 
 editor ::
   forall t m a.
-  (Reflex t, MonadHold t m, MonadFix m, HasTargetInfo a) =>
+  (Reflex t, MonadHold t m, MonadFix m, KnownTarget a) =>
   EditorInit a ->
   EditorControls t a ->
   m (Editor t a)
