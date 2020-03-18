@@ -14,6 +14,7 @@ import Data.GADT.Compare (GEq(..), GCompare(..), (:~:)(..), GOrdering(..))
 import Data.Vector (Vector)
 import Reflex
 
+import Editor.Code
 import Focus (Selection(..))
 import qualified Focus
 import Path (HasTargetInfo, Path, TargetInfo(..), targetInfo)
@@ -43,21 +44,34 @@ runChangeSelection c sel code =
     PrevHole -> case sel of; Selection path -> Focus.nextHole path code
 
 data ChangeCode a b where
+  InsertVar :: ChangeCode Name (Term ty tm)
   InsertApp :: ChangeCode () (Term ty tm)
   InsertLam :: ChangeCode () (Term ty tm)
+  InsertTVar :: ChangeCode Name (Type ty)
   InsertTArr :: ChangeCode () (Type ty)
   InsertTForall :: ChangeCode () (Type ty)
   Rename :: ChangeCode Name Name
 
-runChangeCode :: AtPath (ChangeCode arg) a -> arg -> a -> Maybe (Selection a, a)
+runChangeCode ::
+  HasTargetInfo a =>
+  AtPath (ChangeCode arg) a ->
+  arg ->
+  a ->
+  Maybe (Selection a, a)
 runChangeCode (AtPath p c) arg a =
   case c of
+    InsertVar ->
+      (,) (Selection p) <$>
+      Editor.Code.insertVar p arg a
     InsertApp ->
       (,) (Selection $ Path.snoc p Path.AppL) <$>
       Path.set p (Syntax.App Syntax.Hole Syntax.Hole) a
     InsertLam ->
       (,) (Selection $ Path.snoc p Path.LamArg) <$>
       Path.set p (Syntax.Lam "x" $ lift Syntax.Hole) a
+    InsertTVar ->
+      (,) (Selection p) <$>
+      Editor.Code.insertTVar p arg a
     InsertTArr ->
       (,) (Selection $ Path.snoc p Path.TArrL) <$>
       Path.set p (Syntax.TArr Syntax.THole Syntax.THole) a
