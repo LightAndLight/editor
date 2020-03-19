@@ -2,9 +2,16 @@
 {-# language ScopedTypeVariables #-}
 {-# language RankNTypes #-}
 {-# language TypeApplications #-}
-module Editor.Code where
+module Editor.Code
+  ( insertVar
+  , insertTVar
+  , insertTForall
+  )
+where
 
 import qualified Bound
+import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (first)
 import qualified Data.Vector as Vector
 
 import Path (KnownTarget, Path, Target(..), target)
@@ -295,3 +302,103 @@ insertVar =
             Path.AnnR -> do
               (_, ty, mk) <- Path.matchP Path.AnnR tm
               mk <$> goType mkTm ps n ty
+
+insertTForall ::
+  forall a ty'.
+  KnownTarget a =>
+  Path a (Type ty') ->
+  Name ->
+  a ->
+  Maybe (Path a Name, a)
+insertTForall path_ n_ a_ =
+  let z = Zipper.toZipper a_ in
+  case Zipper._target z of
+    TargetTerm -> goTerm path_ n_ z
+    TargetType -> goType path_ n_ z
+    TargetDeclBody -> goDeclBody path_ n_ z
+    TargetDecl -> goDecl path_ n_ z
+    TargetDecls -> goDecls path_ n_ z
+    TargetName -> Nothing
+  where
+    goType ::
+      Path (Type ty) (Type ty') ->
+      Name ->
+      Zipper a (Type ty) ->
+      Maybe (Path (Type ty) Name, a)
+    goType path n z =
+      (,) (Path.snoc path Path.TForallArg) . Zipper.fromZipper <$>
+      Zipper.traverseFocus (Path.set path (Syntax.TForall n $ lift Syntax.THole)) z
+
+    goTerm ::
+      Path (Term ty tm) (Type ty') ->
+      Name ->
+      Zipper a (Term ty tm) ->
+      Maybe (Path (Term ty tm) Name, a)
+    goTerm path n z =
+      (,) (Path.snoc path Path.TForallArg) . Zipper.fromZipper <$>
+      Zipper.traverseFocus (Path.set path (Syntax.TForall n $ lift Syntax.THole)) z
+
+    goDeclBody ::
+      Path (Syntax.DeclBody ty tm) (Type ty') ->
+      Name ->
+      Zipper a (Syntax.DeclBody ty tm) ->
+      Maybe (Path (Syntax.DeclBody ty tm) Name, a)
+    goDeclBody path n z =
+      case Path.viewl path of
+        p Path.:< ps ->
+          case p of
+            Path.DBType ->
+              case Path.viewl ps of
+                _ Path.:< _ ->
+                  fmap (\(path', a') -> (Path.cons Path.DBType path', a')) .
+                  goType ps n =<<
+                  Zipper.down Path.DBType z
+                Path.EmptyL ->
+                  case Zipper._focus z of
+                    Syntax.Done _ tm ->
+                      pure
+                        ( Path.singleton Path.DBForallArg
+                        , Zipper.fromZipper $
+                          Zipper.mapFocus
+                            (\_ -> Syntax.Forall n $ Syntax.Done Syntax.THole (first Bound.F tm))
+                            z
+                        )
+                    _ -> Nothing
+            Path.DBTerm ->
+              fmap (\(path', a') -> (Path.cons Path.DBTerm path', a')) .
+              goTerm ps n =<<
+              Zipper.down Path.DBTerm z
+            Path.DBForallArg -> Nothing
+            Path.DBForallBody ->
+              fmap (\(path', a') -> (Path.cons Path.DBForallBody path', a')) .
+              goDeclBody ps n =<<
+              Zipper.down Path.DBForallBody z
+
+    goDecl ::
+      Path Syntax.Decl (Type ty') ->
+      Name ->
+      Zipper a Syntax.Decl ->
+      Maybe (Path Syntax.Decl Name, a)
+    goDecl path n z =
+      case Path.viewl path of
+        p Path.:< ps ->
+          case p of
+            Path.DBody ->
+              fmap (\(path', a') -> (Path.cons Path.DBody path', a')) .
+              goDeclBody ps n =<<
+              Zipper.down Path.DBody z
+            Path.DName -> Nothing
+
+    goDecls ::
+      Path Syntax.Decls (Type ty') ->
+      Name ->
+      Zipper a Syntax.Decls ->
+      Maybe (Path Syntax.Decls Name, a)
+    goDecls path n z =
+      case Path.viewl path of
+        p Path.:< ps ->
+          case p of
+            Path.Decl ix ->
+              fmap (\(path', a') -> (Path.cons (Path.Decl ix) path', a')) .
+              goDecl ps n =<<
+              Zipper.down (Path.Decl ix) z

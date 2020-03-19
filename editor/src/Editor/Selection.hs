@@ -1,7 +1,12 @@
 {-# language GADTs #-}
 {-# language ScopedTypeVariables, TypeApplications #-}
 {-# language StandaloneDeriving #-}
-module Editor.Selection where
+module Editor.Selection
+  ( Selection(..)
+  , prevHole
+  , nextHole
+  )
+where
 
 import qualified Bound
 import Control.Lens.Indexed (ifoldl, ifoldr)

@@ -8,6 +8,7 @@ module Editor (EditorInit(..), EditorControls(..), Editor(..), editor) where
 
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (first)
 import qualified Data.Dependent.Map as DMap
 import Data.Dependent.Sum ((==>))
 import Data.GADT.Compare (GEq(..), GCompare(..), (:~:)(..), GOrdering(..))
@@ -76,8 +77,7 @@ runChangeCode (AtPath p c) arg a =
       (,) (Selection $ Path.snoc p Path.TArrL) <$>
       Path.set p (Syntax.TArr Syntax.THole Syntax.THole) a
     InsertTForall ->
-      (,) (Selection $ Path.snoc p Path.TForallArg) <$>
-      Path.set p (Syntax.TForall "x" $ lift Syntax.THole) a
+      first Selection <$> Editor.Code.insertTForall p "x" a
     Rename ->
       (,) (Selection p) <$>
       Path.set p arg a
