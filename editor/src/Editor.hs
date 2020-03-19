@@ -14,9 +14,9 @@ import Data.GADT.Compare (GEq(..), GCompare(..), (:~:)(..), GOrdering(..))
 import Data.Vector (Vector)
 import Reflex
 
-import Editor.Code
-import Focus (Selection(..))
-import qualified Focus
+import qualified Editor.Code
+import Editor.Selection (Selection(..))
+import qualified Editor.Selection
 import Path (KnownTarget, Path, Target(..), target)
 import qualified Path
 import Syntax (Name, Term, Type)
@@ -40,8 +40,8 @@ runChangeSelection :: ChangeSelection a -> Selection a -> a -> Maybe (Selection 
 runChangeSelection c sel code =
   case c of
     SetSelection sel' -> Just sel'
-    NextHole -> case sel of; Selection path -> Focus.nextHole path code
-    PrevHole -> case sel of; Selection path -> Focus.nextHole path code
+    NextHole -> case sel of; Selection path -> Editor.Selection.nextHole path code
+    PrevHole -> case sel of; Selection path -> Editor.Selection.nextHole path code
 
 data ChangeCode a b where
   InsertVar :: ChangeCode Name (Term ty tm)

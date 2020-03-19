@@ -18,11 +18,13 @@ extra-source-files:  CHANGELOG.md
 library
   exposed-modules:     Editor
                      , Editor.Code
+                     , Editor.Selection
   build-depends:       base ^>=4.11.0.0
                      , bound
                      , core
                      , dependent-map
                      , dependent-sum
+                     , lens
                      , reflex >=0.5
                      , transformers
                      , vector

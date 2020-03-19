@@ -1,7 +1,7 @@
 {-# language GADTs #-}
 {-# language ScopedTypeVariables, TypeApplications #-}
 {-# language StandaloneDeriving #-}
-module Focus where
+module Editor.Selection where
 
 import qualified Bound
 import Control.Lens.Indexed (ifoldl, ifoldr)
