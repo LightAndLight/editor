@@ -4,7 +4,17 @@
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language TypeApplications #-}
-module Editor (EditorInit(..), EditorControls(..), Editor(..), editor) where
+{-# options_ghc -fno-warn-overlapping-patterns #-}
+module Editor
+  ( EditorInit(..), EditorControls(..), Editor(..), editor
+  , Action(..)
+  , AtPath(..)
+  , Option(..)
+  , Choice(..)
+  , ChangeCode(..)
+  , ChangeSelection(..)
+  )
+where
 
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.Trans.Class (lift)

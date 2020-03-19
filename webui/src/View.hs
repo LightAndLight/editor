@@ -7,7 +7,9 @@
 {-# language RecursiveDo #-}
 {-# language ScopedTypeVariables #-}
 {-# language TemplateHaskell #-}
-module View where
+module View
+  (NodeInfo(..), nodeHovered, nodeFocus, viewDecls, viewHoles)
+where
 
 import qualified Bound
 import Bound.Var (unvar)
@@ -20,8 +22,8 @@ import Data.Void (absurd)
 import Reflex
 import Reflex.Dom
 
-import Focus (Selection(..))
-import Path (Path, P(..), ViewL(..), HasTargetInfo, viewl, snoc)
+import Editor.Selection (Selection(..))
+import Path (Path, P(..), ViewL(..), KnownTarget, viewl, snoc)
 import qualified Path
 import Typecheck (Holes(..))
 import Style (classes)
@@ -48,7 +50,7 @@ instance Reflex t => Monoid (NodeInfo t a) where
 viewNode ::
   forall t m a val.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
-  , HasTargetInfo val
+  , KnownTarget val
   ) =>
   (val -> Bool) ->
   Dynamic t (Maybe (Selection val)) ->
@@ -105,7 +107,7 @@ viewNode isLeaf dmSelection path f tm = do
 
 viewName ::
   (MonadHold t m, DomBuilder t m, PostBuild t m, MonadFix m) =>
-  HasTargetInfo b =>
+  KnownTarget b =>
   (b -> Syntax.Name) ->
   Dynamic t (Maybe (Selection b)) ->
   Path a b ->
@@ -238,7 +240,7 @@ viewTermChildren ::
   ) =>
   (ty -> Syntax.Name) ->
   (tm' -> Syntax.Name) ->
-  Dynamic t (Maybe (Focus.Selection (Syntax.Term ty tm'))) ->
+  Dynamic t (Maybe (Selection (Syntax.Term ty tm'))) ->
   Path a (Syntax.Term ty tm') ->
   Syntax.Term ty tm' ->
   m (NodeInfo t a)
@@ -616,17 +618,6 @@ viewDecl dmSelection path decl =
         False
         id
         body
-{-
-      let
-        namePath = Path.snoc path Path.DName
-        nameSelection =
-          (>>=
-          \(Selection f) -> case viewl f of
-            DName :< rest -> Just (Selection rest)
-            _ -> Nothing
-          ) <$>
-          dmSelection
--}
 
 viewDecls ::
   forall t m a.

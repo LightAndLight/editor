@@ -8,14 +8,10 @@
 {-# language TypeFamilies #-}
 module App (app) where
 
-import qualified Debug.Trace as Debug
-
-import Control.Monad (guard)
+import Control.Applicative (liftA2)
+import Control.Monad (join)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.State (runStateT)
-import Control.Monad.Trans.Class (lift)
-import Data.Foldable (foldl')
-import Data.Functor (void)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Vector (Vector)
@@ -30,15 +26,14 @@ import JSDOM.Types (liftJSM, toJSVal, fromJSValUnchecked)
 import Language.Javascript.JSaddle.Monad (MonadJSM)
 import Reflex.Dom hiding (Delete, preventDefault)
 
-import qualified Edit
-import qualified Focus
-import Path (Path, TargetInfo(..), HasTargetInfo, ViewR(..), targetInfo, empty)
-import qualified Path
+import Path (Path, Target(..), target, empty)
 import qualified Path.Map
 import Syntax
 import qualified Typecheck
-import qualified Zipper
 
+import Editor (AtPath(..), ChangeCode, Choice(..), Option(..), EditorInit(..), EditorControls(..))
+import qualified Editor
+import Editor.Selection (Selection(..))
 import Input (Inputs(..), getInputs)
 import qualified Style
 import qualified View
@@ -86,53 +81,31 @@ menuInput dInputValid = do
               case m_target of
                 Nothing -> pure Nothing
                 Just t -> do
-                  target :: HTMLInputElement <-
+                  tgt :: HTMLInputElement <-
                     liftJSM $ fromJSValUnchecked =<< toJSVal t
-                  Just <$> HTMLInputElement.getValue target
+                  Just <$> HTMLInputElement.getValue tgt
            )
       ) <$
       ePostBuild
   holdDyn "" $ fmapMaybe id eUpdated
 
-data MenuAction a where
-  InsertLam :: Path a (Term ty tm) -> MenuAction a
-  InsertLamAnn :: Path a (Term ty tm) -> MenuAction a
-  InsertApp :: Path a (Term ty tm) -> MenuAction a
-  InsertVar :: Path a (Term ty tm) -> Name -> MenuAction a
-  InsertName :: Path a Name -> Name -> MenuAction a
-  InsertTArr :: Path a (Type ty) -> MenuAction a
-  InsertTForall :: Path a (Type ty) -> MenuAction a
-  InsertTVar :: Path a (Type ty) -> Name -> MenuAction a
-
-  Annotate :: HasTargetInfo b => Path a b -> MenuAction a
-
-  DeleteTerm :: Path a (Term ty tm) -> MenuAction a
-  DeleteType :: Path a (Type ty) -> MenuAction a
-  DeleteName :: Path a Name -> MenuAction a
-
-  Other :: Text -> MenuAction a
-
-renderMenuAction ::
+renderOption ::
+  forall t m a.
   DomBuilder t m =>
   Bool ->
-  MenuAction a ->
+  AtPath (Option ChangeCode) a ->
   m (Event t ())
-renderMenuAction selected action =
-  case action of
-    InsertLam{} -> item "\\x -> _"
-    InsertLamAnn{} -> item "\\(x : _) -> _"
-    InsertApp{} -> item "_ _"
-    InsertVar{} -> item "variable"
-    InsertName _ n -> item $ unName n
-    InsertTArr{} -> item "_ -> _"
-    InsertTForall{} -> item "∀x. _"
-    InsertTVar{} -> item "type variable"
-    Annotate{} -> item "□ : _"
-    DeleteTerm{} -> item "delete term"
-    DeleteType{} -> item "delete type"
-    DeleteName{} -> item "delete name"
-    Other str -> item str
+renderOption selected (AtPath _ (Option option)) =
+  case option of
+    Editor.InsertLam -> item "\\x -> _"
+    Editor.InsertApp -> item "_ _"
+    Editor.InsertVar -> item "variable"
+    Editor.InsertTArr -> item "_ -> _"
+    Editor.InsertTForall -> item "∀x. _"
+    Editor.InsertTVar -> item "type variable"
+    Editor.Rename -> item "rename"
   where
+    item :: Text -> m (Event t ())
     item x = do
       (theElement, _) <-
         elAttr' "a"
@@ -145,76 +118,23 @@ renderMenuAction selected action =
           (text x)
       pure $ domEvent Click theElement
 
-menuItems ::
-  forall t m a b.
-  (MonadHold t m, DomBuilder t m, MonadFix m) =>
-  HasTargetInfo b =>
-  Event t () ->
-  Dynamic t Text ->
-  Path a b ->
-  m (Dynamic t Int, Dynamic t (Vector (MenuAction a)))
-menuItems eNextItem dInputText path = do
-  rec
-    dSelection :: Dynamic t Int <-
-      holdDyn 0 $
-      leftmost
-      [ (\n items -> (n + 1) `mod` Vector.length items) <$>
-        current dSelection <*>
-        current dItems <@ eNextItem
-      ]
-    dItems <-
-      case targetInfo @b of
-        TargetDecls -> error "todo: menu for decls"
-        TargetDeclBody -> error "todo: menu for declbody"
-        TargetDecl ->
-          pure $
-          constDyn
-          [ Other "insert decl below"
-          , Other "insert decl above"
-          ]
-        TargetTerm ->
-          pure $
-            (\n ->
-             [ Annotate path
-             , InsertApp path
-             , InsertLam path
-             , InsertLamAnn path
-             , InsertVar path $ N n
-             ]
-            ) <$>
-            dInputText
-        TargetType ->
-          pure $
-          (\n ->
-           [ InsertTArr path
-           , InsertTForall path
-           , InsertTVar path $ N n
-           ]
-          ) <$>
-          dInputText
-        TargetName ->
-          pure $
-            (\n ->
-               [ InsertName path $ N n
-               , Annotate path
-               ]
-            ) <$>
-            dInputText
-  pure (dSelection, dItems)
-
-renderMenuActions ::
+renderOptions ::
   DomBuilder t m =>
-  Int ->
-  Vector (MenuAction a) ->
+  Maybe Int ->
+  Maybe (Vector (AtPath (Option ChangeCode) a)) ->
   m (Event t Int)
-renderMenuActions selected =
-  Vector.ifoldr
-    (\ix a rest -> do
-       e <- renderMenuAction (ix == selected) a
-       es <- rest
-       pure $ leftmost [ix <$ e, es]
-    )
-    (pure never)
+renderOptions selected m_options =
+  case m_options of
+    Nothing -> pure never
+    Just options ->
+      Vector.ifoldr
+        (\ix a rest -> do
+          e <- renderOption (Just ix == selected) a
+          es <- rest
+          pure $ leftmost [ix <$ e, es]
+        )
+        (pure never)
+        options
 
 bindDynamicM ::
   (MonadHold t m, DomBuilder t m) =>
@@ -227,47 +147,82 @@ bindDynamicM f d =
     (f <$> updated d)
 
 menuForTarget ::
-  forall t m a b.
+  forall t m a.
   ( MonadHold t m, DomBuilder t m
   , DomBuilderSpace m ~ GhcjsDomSpace
   , PostBuild t m, TriggerEvent t m
   , PerformEvent t m, MonadJSM (Performable m)
   , MonadJSM m, MonadFix m
   ) =>
-  HasTargetInfo b =>
   Event t () ->
   Event t () ->
-  Path a b ->
-  m (Event t [MenuAction a])
-menuForTarget eNextItem eEnter path =
+  Event t (Vector (AtPath (Option ChangeCode) a)) ->
+  m (Event t (AtPath (Choice ChangeCode) a))
+menuForTarget eNextItem eEnter eOptions =
   elAttr "div" ("class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
     rec
+      dInputValid <-
+        holdDyn True $
+        (\txt (AtPath _ (Option option)) ->
+            case option of
+              Editor.InsertVar -> not $ Text.null txt
+              Editor.InsertTVar -> not $ Text.null txt
+              _ -> True
+        ) <$>
+        current dInputText <@>
+        eOption
+
       dInputText <- elAttr "div" ("class" =: "dropdown-item") $ menuInput dInputValid
+
+      dOptions <- holdDyn Nothing $ Just <$> eOptions
+      dSelection :: Dynamic t (Maybe Int) <-
+        join <$>
+        widgetHold
+          (pure $ constDyn Nothing)
+          ((\options -> do
+               rec
+                 self <-
+                   holdDyn 0 $
+                   (\n -> (n + 1) `mod` Vector.length options) <$>
+                   current self <@
+                   eNextItem
+               pure $ Just <$> self
+           ) <$>
+           eOptions
+          )
+
+      eItemClicked :: Event t Int <-
+        fmap switchDyn $
+        bindDynamicM
+          (uncurry renderOptions)
+          ((,) <$> dSelection <*> dOptions)
+
       let
-        dInputValid =
-          (\sel txt ->
-             case sel of
-               InsertVar{} -> not $ Text.null txt
-               InsertTVar{} -> not $ Text.null txt
-               _ -> True
-          ) <$>
-          dAction <*>
-          dInputText
-      (dSelection, dItems) <- menuItems eNextItem dInputText path
-      let dAction = (Vector.!) <$> dItems <*> dSelection
-    eItemClicked :: Event t Int <-
-      fmap switchDyn $
-      bindDynamicM
-        (uncurry renderMenuActions)
-        ((,) <$> dSelection <*> dItems)
-    pure .
-      fmap (\x -> [x]) .
-      gate (current dInputValid) $
-      leftmost
-      [ (Vector.!) <$> current dItems <@> eItemClicked
-      , current dAction <@ eEnter
-      ]
+        eOption :: Event t (AtPath (Option ChangeCode) a)
+        eOption =
+          mapMaybeCheap id $
+          leftmost
+          [ liftA2 (Vector.!) <$> current dOptions <*> current dSelection <@ eEnter
+          , (\x y -> (Vector.!) <$> x <*> pure y) <$> current dOptions <@> eItemClicked
+          ]
+    let
+      eChoice :: Event t (AtPath (Choice ChangeCode) a)
+      eChoice =
+        (\inputText (AtPath path (Option o)) ->
+           case o of
+             Editor.InsertVar -> AtPath path (Choice (Syntax.N inputText) o)
+             Editor.InsertApp -> AtPath path (Choice () o)
+             Editor.InsertLam -> AtPath path (Choice () o)
+             Editor.InsertTVar -> AtPath path (Choice (Syntax.N inputText) o)
+             Editor.InsertTArr -> AtPath path (Choice () o)
+             Editor.InsertTForall -> AtPath path (Choice () o)
+             Editor.Rename -> AtPath path (Choice (Syntax.N inputText) o)
+        ) <$>
+        current dInputText <@>
+        eOption
+
+    pure $ gate (current dInputValid) eChoice
 
 menu ::
   ( MonadHold t m, DomBuilder t m
@@ -280,185 +235,17 @@ menu ::
   Event t () ->
   Event t () ->
   Event t () ->
-  Dynamic t (Focus.Selection Decls) ->
-  m (Dynamic t Bool, Event t [MenuAction Decls])
-menu eOpen eClose eNextItem eEnter dSelection = do
+  Event t (Vector (AtPath (Option ChangeCode) a)) ->
+  m (Dynamic t Bool, Event t (AtPath (Choice ChangeCode) a))
+menu eOpen eClose eNextItem eEnter eOptions = do
   eAction <-
     fmap switchDyn . widgetHold (pure never) $
     leftmost
-    [ (\(Focus.Selection path) -> menuForTarget eNextItem eEnter path) <$>
-      current dSelection <@ eOpen
+    [ menuForTarget eNextItem eEnter eOptions <$ eOpen
     , pure never <$ eClose
     ]
   dOpen <- holdDyn False $ leftmost [True <$ eOpen, False <$ eClose]
   pure (dOpen, eAction)
-
-runAction ::
-  HasTargetInfo a =>
-  MenuAction a ->
-  EditorState a ->
-  EditorState a
-runAction action es =
-  case action of
-    InsertLam path ->
-      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.Lam "x" $ lift Syntax.Hole) (Path.singleton Path.LamArg)) (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    InsertLamAnn path ->
-      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.LamAnn "x" Syntax.THole $ lift Syntax.Hole) (Path.singleton Path.LamAnnType)) (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    InsertApp path ->
-      case Edit.edit path targetInfo (Edit.InsertTerm (Syntax.App Syntax.Hole Syntax.Hole) (Path.singleton Path.AppL)) (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    InsertName path n ->
-      case Edit.edit path targetInfo (Edit.ModifyName $ const n) (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    InsertVar path n ->
-      case Edit.edit path targetInfo (Edit.InsertVar n) (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          case Focus.nextHole newPath new of
-            Nothing ->
-              es
-              { _esSelection = Focus.Selection newPath
-              , _esContent = new
-              }
-            Just newPath' ->
-              es
-              { _esSelection = newPath'
-              , _esContent = new
-              }
-    Annotate (path :: Path a x) ->
-      case targetInfo @x of
-        TargetDecl -> es
-        TargetDeclBody -> es
-        TargetDecls -> es
-        TargetType -> error "todo: annotate type"
-        TargetTerm ->
-          case Edit.edit path targetInfo (Edit.ModifyTerm (`Syntax.Ann` Syntax.THole) $ Path.singleton Path.AnnR) (_esContent es) of
-            Left err -> Debug.traceShow err es
-            Right (newPath, _, new) ->
-              es
-              { _esSelection = Focus.Selection newPath
-              , _esContent = new
-              }
-        TargetName ->
-          case Path.viewr path of
-            EmptyR -> es
-            ps :> p ->
-              case p of
-                Path.DName -> error "todo: annotate DName"
-                Path.TForallArg -> error "todo: annotate TForallArg"
-                Path.DBForallArg -> error "todo: annotate DBForallArg"
-                Path.LamAnnArg->
-                  case Zipper.downTo ps $ Zipper.toZipper (_esContent es) of
-                    Nothing -> es
-                    Just z ->
-                      case Zipper._focus z of
-                        Syntax.LamAnn n _ body ->
-                          let
-                            new =
-                              Zipper.fromZipper $
-                              z { Zipper._focus = Syntax.LamAnn n THole body }
-                            newPath = Path.snoc ps Path.LamAnnType
-                          in
-                            es
-                            { _esSelection = Focus.Selection newPath
-                            , _esContent = new
-                            }
-                        _ -> undefined
-                Path.LamArg ->
-                  case Zipper.downTo ps $ Zipper.toZipper (_esContent es) of
-                    Nothing -> es
-                    Just z ->
-                      case Zipper._focus z of
-                        Syntax.Lam n body ->
-                          let
-                            new =
-                              Zipper.fromZipper $
-                              z { Zipper._focus = Syntax.LamAnn n THole body }
-                            newPath = Path.snoc ps Path.LamAnnType
-                          in
-                            es
-                            { _esSelection = Focus.Selection newPath
-                            , _esContent = new
-                            }
-                        _ -> undefined
-    InsertTArr path ->
-      case Edit.edit path targetInfo (Edit.InsertType (Syntax.TArr Syntax.THole Syntax.THole) (Path.singleton Path.TArrL)) (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    InsertTForall path ->
-      case Edit.edit path targetInfo (Edit.InsertTForall "x") (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    InsertTVar path n ->
-      case Edit.edit path targetInfo (Edit.InsertTVar n) (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          case Focus.nextHole newPath new of
-            Nothing ->
-              es
-              { _esSelection = Focus.Selection newPath
-              , _esContent = new
-              }
-            Just newPath' ->
-              es
-              { _esSelection = newPath'
-              , _esContent = new
-              }
-    DeleteTerm path ->
-      case Edit.edit path TargetTerm Edit.DeleteTerm (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    DeleteType path ->
-      case Edit.edit path TargetType Edit.DeleteType (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    DeleteName path ->
-      case Edit.edit path TargetName Edit.DeleteName (_esContent es) of
-        Left err -> Debug.traceShow err es
-        Right (newPath, _, new) ->
-          es
-          { _esSelection = Focus.Selection newPath
-          , _esContent = new
-          }
-    Other{} -> es
 
 infoItem :: DomBuilder t m => Text -> Text -> m ()
 infoItem left right =
@@ -479,53 +266,6 @@ infoItem left right =
         ("class" =: ("level-item " <> Style.classes [Style.code]))
         (text right)
 
-data EditorState a
-  = EditorState
-  { _esSelection :: Focus.Selection a
-  , _esContent :: a
-  }
-
-mkEditorState ::
-  ( HasTargetInfo a
-  , Reflex t, MonadHold t m, MonadFix m
-  ) =>
-  EditorState a ->
-  Inputs t ->
-  Event t (Focus.Selection a) ->
-  Event t [MenuAction a] ->
-  Dynamic t Bool ->
-  m (Dynamic t (EditorState a))
-mkEditorState initial inputs eSelection eMenuActions dMenuOpen = do
-  let
-    eNextHole =
-      (\es ->
-        case _esSelection es of
-          Focus.Selection p ->
-            case Focus.nextHole p (_esContent es) of
-              Nothing -> es
-              Just p' -> es { _esSelection = p' }
-      ) <$
-      gate (not <$> current dMenuOpen) (_iTab inputs)
-    ePrevHole =
-      (\es ->
-        case _esSelection es of
-          Focus.Selection p ->
-            case Focus.prevHole p (_esContent es) of
-              Nothing -> es
-              Just p' -> es { _esSelection = p' }
-      ) <$
-      gate (not <$> current dMenuOpen) (_iShiftTab inputs)
-  foldDyn
-    ($)
-    initial
-    (mergeWith (.)
-      [ (\acts es -> foldl' (flip runAction) es acts) <$> eMenuActions
-      , eNextHole
-      , ePrevHole
-      , (\p es -> es { _esSelection = p }) <$> eSelection
-      ]
-    )
-
 app ::
   forall t m.
   ( MonadHold t m, PostBuild t m, DomBuilder t m, MonadFix m
@@ -537,65 +277,47 @@ app ::
 app =
   elAttr "div" ("class" =: "columns" <> "style" =: "height: 100%") $ do
     inputs <- getInputs
-    (dTerm, dSelection) <-
+    editor <-
       elAttr "div" ("class" =: Style.classes [Style.mainPanel]) $ do
         rec
-          let eMenuActions = eMenuAction <> eDeleteNode
-          dEditorState :: Dynamic t (EditorState Decls)<-
-            mkEditorState
-              (EditorState
-               { _esSelection =
-                 Focus.Selection $
-                 Path.singleton (Path.Decl 0)
-               , _esContent =
-                 Syntax.Decls
-                 [ Syntax.Decl
-                     (Syntax.N "val")
-                     (Syntax.Forall "x" $
-                      Syntax.Forall "y" $
-                      Syntax.Forall "z" $
-                      Syntax.Done Syntax.THole Syntax.Hole
-                     )
-                 ]
+          let
+            eOpenMenu = gate (not <$> current dMenuOpen) (Input._iSpace inputs)
+            eCloseMenu = gate (current dMenuOpen) (Input._iEscape inputs)
+            eNextItem = gate (current dMenuOpen) (Input._iTab inputs)
+            eSelectItem = gate (current dMenuOpen) (Input._iEnter inputs)
+            eOptions = Editor._eChangeCodeOptions editor
+          (dMenuOpen, eMenuChoice) <- menu eOpenMenu eCloseMenu eNextItem eSelectItem eOptions
+
+          let
+            eAction =
+              leftmost
+              [ Editor.ChangeCode <$> eMenuChoice
+              , Editor.ChangeSelection . Editor.SetSelection <$> eNodeSelected
+              ]
+          editor <-
+            Editor.editor
+              (EditorInit
+               { _eiCode = Syntax.Decls [Syntax.Decl "val" $ Syntax.Done Syntax.THole Syntax.Hole]
                }
               )
-              inputs
-              eSelection
-              eMenuActions
-              dMenuOpen
-          let dSelection = _esSelection <$> dEditorState
-          let dTerm = _esContent <$> dEditorState
-          eSelection :: Event t (Focus.Selection Decls) <-
-            fmap switchDyn $
-            bindDynamicM
-              (fmap View._nodeFocus .
-               View.viewDecls (Just <$> dSelection) Path.empty
+              (EditorControls
+               { _ecAction = eAction
+               , _ecChangeCodeOptions = eOpenMenu
+               }
               )
-              dTerm
-          let
-            eDeleteNode =
-              attachWithMaybe
-                (\(open, sel) _ -> do
-                  guard $ not open
-                  case sel of
-                    Focus.Selection (path :: Path Decls x) ->
-                      case targetInfo @x of
-                        TargetTerm -> Just [DeleteTerm path]
-                        TargetType -> Just [DeleteType path]
-                        TargetName -> Just [DeleteName path]
-                        TargetDecl -> Nothing
-                        TargetDeclBody -> Nothing
-                        TargetDecls -> Nothing
-                )
-                ((,) <$> current dMenuOpen <*> current dSelection)
-                (_iDelete inputs)
-          let
-            eOpenMenu = _iSpace inputs
-            eCloseMenu = _iEscape inputs <> void eSelection <> void eMenuAction
-          (dMenuOpen, eMenuAction) <-
-            menu eOpenMenu eCloseMenu (_iTab inputs) (_iEnter inputs) dSelection
-        pure (dTerm, dSelection)
+          dNodeInfo <-
+            bindDynamicM
+              (View.viewDecls
+                 (Just <$> Editor._eSelection editor)
+                 Path.empty
+              )
+              (Editor._eCode editor)
+          let eNodeSelected = switchDyn $ View._nodeFocus <$> dNodeInfo
+        pure editor
     let
+      dCode = Editor._eCode editor
+      dSelection = Editor._eSelection editor
+
       dTcRes ::
         Dynamic t
           (Either
@@ -608,12 +330,12 @@ app =
           (const Nothing)
           (const Nothing)
           Path.empty <$>
-        dTerm
+        dCode
 
       dSelectionInfo :: Dynamic t (m ())
       dSelectionInfo =
-        (\(Focus.Selection (path :: Path Decls y)) tcRes ->
-           case targetInfo @y of
+        (\(Selection (path :: Path Decls y)) tcRes ->
+           case target @y of
              TargetTerm -> do
                infoItem "Form" "expr"
                case tcRes of
@@ -655,6 +377,5 @@ app =
         dTcRes
     elAttr "div" ("class" =: Style.classes [Style.rightPanel]) $ do
       el "header" $ text "Info"
-      elAttr "section" ("class" =: Style.classes [Style.code]) $
-        dyn_ dSelectionInfo
+      elAttr "section" ("class" =: Style.classes [Style.code]) $ dyn_ dSelectionInfo
     pure ()

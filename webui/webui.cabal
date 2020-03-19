@@ -23,6 +23,7 @@ executable webui
   main-is:             Main.hs
   build-depends:       base ^>=4.11.0.0
                      , core
+                     , editor
 
                      , bound
                      , clay
