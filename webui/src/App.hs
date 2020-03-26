@@ -92,7 +92,7 @@ renderOption ::
   DomBuilder t m =>
   Bool ->
   AtPath (Option ChangeCode) a ->
-  m (Event t ())
+  m (Event t (), Event t ())
 renderOption selected (AtPath _ (Option option)) =
   case option of
     Editor.InsertLam -> item "\\x -> _"
@@ -103,7 +103,7 @@ renderOption selected (AtPath _ (Option option)) =
     Editor.InsertTVar -> item "type variable"
     Editor.Rename -> item "rename"
   where
-    item :: Text -> m (Event t ())
+    item :: Text -> m (Event t (), Event t ())
     item x = do
       (theElement, _) <-
         elAttr' "a"
@@ -114,21 +114,21 @@ renderOption selected (AtPath _ (Option option)) =
            )
           )
           (text x)
-      pure $ domEvent Click theElement
+      pure (domEvent Click theElement, domEvent Mouseenter theElement)
 
 renderOptions ::
   DomBuilder t m =>
   Int ->
   (Vector (AtPath (Option ChangeCode) a)) ->
-  m (Event t Int)
+  m (Event t (), Event t Int)
 renderOptions selected options =
   Vector.ifoldr
     (\ix a rest -> do
-      e <- renderOption (ix == selected) a
-      es <- rest
-      pure $ leftmost [ix <$ e, es]
+      (e1, e2) <- renderOption (ix == selected) a
+      (es1, es2) <- rest
+      pure (leftmost [e1, es1], leftmost [ix <$ e2, es2])
     )
-    (pure never)
+    (pure (never, never))
     options
 
 bindDynamicM ::
@@ -157,40 +157,39 @@ menuForTarget eNextItem eEnter dOptions =
   elAttr "div" ("class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
     rec
-      dInputValid <-
-        holdDyn True $
-        (\txt (AtPath _ (Option option)) ->
-            case option of
-              Editor.InsertVar -> not $ Text.null txt
-              Editor.InsertTVar -> not $ Text.null txt
-              _ -> True
-        ) <$>
-        current dInputText <@>
-        eOption
+      let
+        dInputValid =
+          (\txt (AtPath _ (Option option)) ->
+              case option of
+                Editor.InsertVar -> not $ Text.null txt
+                Editor.InsertTVar -> not $ Text.null txt
+                Editor.Rename -> not $ Text.null txt
+                _ -> True
+          ) <$>
+          dInputText <*>
+          dOption
 
       dInputText <- elAttr "div" ("class" =: "dropdown-item") $ menuInput dInputValid
 
       rec
         dSelection :: Dynamic t Int <-
           holdDyn 0 $
-          (\n options -> (n + 1) `mod` Vector.length options) <$>
+          (\n options update -> update n `mod` Vector.length options) <$>
           current dSelection <*>
-          current dOptions <@
-          eNextItem
+          current dOptions <@>
+          mergeWith (.) [const <$> eItemHovered, (+1) <$ eNextItem]
 
-      eItemClicked :: Event t Int <-
-        switchDyn <$>
+      dOptionEvents <-
         bindDynamicM
           (uncurry renderOptions)
           ((,) <$> dSelection <*> dOptions)
 
+      let eItemClicked = switchDyn $ fst <$> dOptionEvents
+      let eItemHovered = switchDyn $ snd <$> dOptionEvents
+
       let
-        eOption :: Event t (AtPath (Option ChangeCode) a)
-        eOption =
-          leftmost
-          [ (Vector.!) <$> current dOptions <*> current dSelection <@ eEnter
-          , (Vector.!) <$> current dOptions <@> eItemClicked
-          ]
+        dOption :: Dynamic t (AtPath (Option ChangeCode) a)
+        dOption = (Vector.!) <$> dOptions <*> dSelection
     let
       eChoice :: Event t (AtPath (Choice ChangeCode) a)
       eChoice =
@@ -204,8 +203,9 @@ menuForTarget eNextItem eEnter dOptions =
              Editor.InsertTForall -> AtPath path (Choice () o)
              Editor.Rename -> AtPath path (Choice (Syntax.N inputText) o)
         ) <$>
-        current dInputText <@>
-        eOption
+        current dInputText <*>
+        current dOption <@
+        leftmost [eEnter, eItemClicked]
 
     pure $ gate (current dInputValid) eChoice
 
