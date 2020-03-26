@@ -59,9 +59,11 @@ data ChangeCode a b where
   InsertVar :: ChangeCode Name (Term ty tm)
   InsertApp :: ChangeCode () (Term ty tm)
   InsertLam :: ChangeCode () (Term ty tm)
+  DeleteTerm :: ChangeCode () (Term ty tm)
   InsertTVar :: ChangeCode Name (Type ty)
   InsertTArr :: ChangeCode () (Type ty)
   InsertTForall :: ChangeCode () (Type ty)
+  DeleteType :: ChangeCode () (Type ty)
   Rename :: ChangeCode Name Name
 
 runChangeCode ::
@@ -81,6 +83,9 @@ runChangeCode (AtPath p c) arg a =
     InsertLam ->
       (,) (Selection $ Path.snoc p Path.LamArg) <$>
       Path.set p (Syntax.Lam "x" $ lift Syntax.Hole) a
+    DeleteTerm ->
+      (,) (Selection p) <$>
+      Path.set p Syntax.Hole a
     InsertTVar ->
       (,) (Maybe.fromMaybe (Selection p) $ Editor.Selection.nextHole p a) <$>
       Editor.Code.insertTVar p arg a
@@ -89,6 +94,9 @@ runChangeCode (AtPath p c) arg a =
       Path.set p (Syntax.TArr Syntax.THole Syntax.THole) a
     InsertTForall ->
       first Selection <$> Editor.Code.insertTForall p "x" a
+    DeleteType ->
+      (,) (Selection p) <$>
+      Path.set p Syntax.THole a
     Rename ->
       (,) (Selection p) <$>
       Path.set p arg a
@@ -143,11 +151,13 @@ changeCodeOptions (Selection (path :: Path a x)) =
       [ AtPath path (Option InsertVar)
       , AtPath path (Option InsertApp)
       , AtPath path (Option InsertLam)
+      , AtPath path (Option DeleteTerm)
       ]
     TargetType ->
       [ AtPath path (Option InsertTVar)
       , AtPath path (Option InsertTArr)
       , AtPath path (Option InsertTForall)
+      , AtPath path (Option DeleteType)
       ]
     TargetName ->
       [ AtPath path (Option Rename)

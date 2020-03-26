@@ -98,9 +98,11 @@ renderOption selected (AtPath _ (Option option)) =
     Editor.InsertLam -> item "\\x -> _"
     Editor.InsertApp -> item "_ _"
     Editor.InsertVar -> item "variable"
+    Editor.DeleteTerm -> item "delete"
     Editor.InsertTArr -> item "_ -> _"
     Editor.InsertTForall -> item "∀x. _"
     Editor.InsertTVar -> item "type variable"
+    Editor.DeleteType -> item "delete"
     Editor.Rename -> item "rename"
   where
     item :: Text -> m (Event t (), Event t ())
@@ -203,9 +205,11 @@ menuForTarget eNextItem eEnter dOptions =
                Editor.InsertVar -> AtPath path (Choice (Syntax.N inputText) o)
                Editor.InsertApp -> AtPath path (Choice () o)
                Editor.InsertLam -> AtPath path (Choice () o)
+               Editor.DeleteTerm -> AtPath path (Choice () o)
                Editor.InsertTVar -> AtPath path (Choice (Syntax.N inputText) o)
                Editor.InsertTArr -> AtPath path (Choice () o)
                Editor.InsertTForall -> AtPath path (Choice () o)
+               Editor.DeleteType -> AtPath path (Choice () o)
                Editor.Rename -> AtPath path (Choice (Syntax.N inputText) o)
            ) <$>
            m_option
@@ -287,9 +291,35 @@ app =
             ePrevHole = gate (not <$> current dMenuOpen) (Input._iShiftTab inputs)
 
           let
+            dSelection = Editor._eSelection editor
+
+          let
+            eDeleteTerm =
+              attachWithMaybe
+                (\(Selection (path :: Path Decls x)) _ ->
+                   case target @x of
+                     TargetTerm -> Just $ AtPath path (Choice () Editor.DeleteTerm)
+                     _ -> Nothing
+                )
+                (current dSelection)
+                (Input._iDelete inputs)
+
+            eDeleteType =
+              attachWithMaybe
+                (\(Selection (path :: Path Decls x)) _ ->
+                   case target @x of
+                     TargetType -> Just $ AtPath path (Choice () Editor.DeleteType)
+                     _ -> Nothing
+                )
+                (current dSelection)
+                (Input._iDelete inputs)
+
+          let
             eAction =
               leftmost
               [ Editor.ChangeCode <$> eMenuChoice
+              , Editor.ChangeCode <$> eDeleteTerm
+              , Editor.ChangeCode <$> eDeleteType
               , Editor.ChangeSelection . Editor.SetSelection <$> eNodeSelected
               , Editor.ChangeSelection Editor.NextHole <$ eNextHole
               , Editor.ChangeSelection Editor.PrevHole <$ ePrevHole
@@ -307,7 +337,7 @@ app =
           dNodeInfo <-
             bindDynamicM
               (View.viewDecls
-                 (Just <$> Editor._eSelection editor)
+                 (Just <$> dSelection)
                  Path.empty
               )
               (Editor._eCode editor)

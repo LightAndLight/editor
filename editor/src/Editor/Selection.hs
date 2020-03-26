@@ -1,8 +1,10 @@
 {-# language GADTs #-}
+{-# language PackageImports #-}
 {-# language ScopedTypeVariables, TypeApplications #-}
 {-# language StandaloneDeriving #-}
 module Editor.Selection
   ( Selection(..)
+  , selectionTarget
   , prevHole
   , nextHole
   )
@@ -10,6 +12,7 @@ where
 
 import qualified Bound
 import Control.Lens.Indexed (ifoldl, ifoldr)
+import "core" Data.Some (Some(..))
 import qualified Data.Vector as Vector
 
 import Path (P(..), Path, Target(..), KnownTarget, target)
@@ -22,6 +25,9 @@ data Branch a where
 data Selection a where
   Selection :: KnownTarget b => Path a b -> Selection a
 deriving instance Show (Selection a)
+
+selectionTarget :: Selection a -> Some Target
+selectionTarget (Selection (_ :: Path a b)) = Some (target @b)
 
 nextHole :: KnownTarget b => Path a b -> a -> Maybe (Selection a)
 nextHole = goDown Path.empty []
