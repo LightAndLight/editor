@@ -267,7 +267,11 @@ app =
         rec
           let
             eOpenMenu = gate (not <$> current dMenuOpen) (Input._iSpace inputs)
-            eCloseMenu = gate (current dMenuOpen) (Input._iEscape inputs)
+            eCloseMenu =
+              leftmost
+              [ gate (current dMenuOpen) (Input._iEscape inputs)
+              , () <$ eMenuChoice
+              ]
             eNextItem = gate (current dMenuOpen) (Input._iTab inputs)
             eSelectItem = gate (current dMenuOpen) (Input._iEnter inputs)
             dOptions = Editor._eChangeCodeOptions editor
