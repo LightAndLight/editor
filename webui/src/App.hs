@@ -159,12 +159,15 @@ menuForTarget eNextItem eEnter dOptions =
     rec
       let
         dInputValid =
-          (\txt (AtPath _ (Option option)) ->
-              case option of
-                Editor.InsertVar -> not $ Text.null txt
-                Editor.InsertTVar -> not $ Text.null txt
-                Editor.Rename -> not $ Text.null txt
-                _ -> True
+          (\txt m_option ->
+             case m_option of
+               Just (AtPath _ (Option option)) ->
+                 case option of
+                   Editor.InsertVar -> not $ Text.null txt
+                   Editor.InsertTVar -> not $ Text.null txt
+                   Editor.Rename -> not $ Text.null txt
+                   _ -> True
+               Nothing -> True
           ) <$>
           dInputText <*>
           dOption
@@ -188,24 +191,27 @@ menuForTarget eNextItem eEnter dOptions =
       let eItemHovered = switchDyn $ snd <$> dOptionEvents
 
       let
-        dOption :: Dynamic t (AtPath (Option ChangeCode) a)
-        dOption = (Vector.!) <$> dOptions <*> dSelection
+        dOption :: Dynamic t (Maybe (AtPath (Option ChangeCode) a))
+        dOption = (Vector.!?) <$> dOptions <*> dSelection
     let
       eChoice :: Event t (AtPath (Choice ChangeCode) a)
       eChoice =
-        (\inputText (AtPath path (Option o)) ->
-           case o of
-             Editor.InsertVar -> AtPath path (Choice (Syntax.N inputText) o)
-             Editor.InsertApp -> AtPath path (Choice () o)
-             Editor.InsertLam -> AtPath path (Choice () o)
-             Editor.InsertTVar -> AtPath path (Choice (Syntax.N inputText) o)
-             Editor.InsertTArr -> AtPath path (Choice () o)
-             Editor.InsertTForall -> AtPath path (Choice () o)
-             Editor.Rename -> AtPath path (Choice (Syntax.N inputText) o)
-        ) <$>
-        current dInputText <*>
-        current dOption <@
-        leftmost [eEnter, eItemClicked]
+        attachWithMaybe
+        (\(inputText, m_option) _ ->
+           (\(AtPath path (Option o)) ->
+             case o of
+               Editor.InsertVar -> AtPath path (Choice (Syntax.N inputText) o)
+               Editor.InsertApp -> AtPath path (Choice () o)
+               Editor.InsertLam -> AtPath path (Choice () o)
+               Editor.InsertTVar -> AtPath path (Choice (Syntax.N inputText) o)
+               Editor.InsertTArr -> AtPath path (Choice () o)
+               Editor.InsertTForall -> AtPath path (Choice () o)
+               Editor.Rename -> AtPath path (Choice (Syntax.N inputText) o)
+           ) <$>
+           m_option
+        )
+        ((,) <$> current dInputText <*> current dOption)
+        (leftmost [eEnter, eItemClicked])
 
     pure $ gate (current dInputValid) eChoice
 
