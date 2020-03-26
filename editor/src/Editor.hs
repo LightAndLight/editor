@@ -126,14 +126,13 @@ instance GCompare (KUpdate a) where
 data EditorControls t a
   = EditorControls
   { _ecAction :: Event t (Action a)
-  , _ecChangeCodeOptions :: Event t ()
   }
 
 data Editor t a
   = Editor
   { _eCode :: Dynamic t a
   , _eSelection :: Dynamic t (Selection a)
-  , _eChangeCodeOptions :: Event t (Vector (AtPath (Option ChangeCode) a))
+  , _eChangeCodeOptions :: Dynamic t (Vector (AtPath (Option ChangeCode) a))
   }
 
 changeCodeOptions :: Selection a -> Vector (AtPath (Option ChangeCode) a)
@@ -204,9 +203,6 @@ editor initial controls = do
     Editor
     { _eCode = dCode
     , _eSelection = dSelection
-    , _eChangeCodeOptions =
-        changeCodeOptions <$>
-        current dSelection <@
-        _ecChangeCodeOptions controls
+    , _eChangeCodeOptions = changeCodeOptions <$> dSelection
     }
 

@@ -8,8 +8,6 @@
 {-# language TypeFamilies #-}
 module App (app) where
 
-import Control.Applicative (liftA2)
-import Control.Monad (join)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.State (runStateT)
 import Data.Text (Text)
@@ -120,21 +118,18 @@ renderOption selected (AtPath _ (Option option)) =
 
 renderOptions ::
   DomBuilder t m =>
-  Maybe Int ->
-  Maybe (Vector (AtPath (Option ChangeCode) a)) ->
+  Int ->
+  (Vector (AtPath (Option ChangeCode) a)) ->
   m (Event t Int)
-renderOptions selected m_options =
-  case m_options of
-    Nothing -> pure never
-    Just options ->
-      Vector.ifoldr
-        (\ix a rest -> do
-          e <- renderOption (Just ix == selected) a
-          es <- rest
-          pure $ leftmost [ix <$ e, es]
-        )
-        (pure never)
-        options
+renderOptions selected options =
+  Vector.ifoldr
+    (\ix a rest -> do
+      e <- renderOption (ix == selected) a
+      es <- rest
+      pure $ leftmost [ix <$ e, es]
+    )
+    (pure never)
+    options
 
 bindDynamicM ::
   (MonadHold t m, DomBuilder t m) =>
@@ -156,9 +151,9 @@ menuForTarget ::
   ) =>
   Event t () ->
   Event t () ->
-  Event t (Vector (AtPath (Option ChangeCode) a)) ->
+  Dynamic t (Vector (AtPath (Option ChangeCode) a)) ->
   m (Event t (AtPath (Choice ChangeCode) a))
-menuForTarget eNextItem eEnter eOptions =
+menuForTarget eNextItem eEnter dOptions =
   elAttr "div" ("class" =: "dropdown is-active") $
   elAttr "div" ("class" =: "dropdown-content") $ do
     rec
@@ -175,25 +170,16 @@ menuForTarget eNextItem eEnter eOptions =
 
       dInputText <- elAttr "div" ("class" =: "dropdown-item") $ menuInput dInputValid
 
-      dOptions <- holdDyn Nothing $ Just <$> eOptions
-      dSelection :: Dynamic t (Maybe Int) <-
-        join <$>
-        widgetHold
-          (pure $ constDyn Nothing)
-          ((\options -> do
-               rec
-                 self <-
-                   holdDyn 0 $
-                   (\n -> (n + 1) `mod` Vector.length options) <$>
-                   current self <@
-                   eNextItem
-               pure $ Just <$> self
-           ) <$>
-           eOptions
-          )
+      rec
+        dSelection :: Dynamic t Int <-
+          holdDyn 0 $
+          (\n options -> (n + 1) `mod` Vector.length options) <$>
+          current dSelection <*>
+          current dOptions <@
+          eNextItem
 
       eItemClicked :: Event t Int <-
-        fmap switchDyn $
+        switchDyn <$>
         bindDynamicM
           (uncurry renderOptions)
           ((,) <$> dSelection <*> dOptions)
@@ -201,10 +187,9 @@ menuForTarget eNextItem eEnter eOptions =
       let
         eOption :: Event t (AtPath (Option ChangeCode) a)
         eOption =
-          mapMaybeCheap id $
           leftmost
-          [ liftA2 (Vector.!) <$> current dOptions <*> current dSelection <@ eEnter
-          , (\x y -> (Vector.!) <$> x <*> pure y) <$> current dOptions <@> eItemClicked
+          [ (Vector.!) <$> current dOptions <*> current dSelection <@ eEnter
+          , (Vector.!) <$> current dOptions <@> eItemClicked
           ]
     let
       eChoice :: Event t (AtPath (Choice ChangeCode) a)
@@ -235,13 +220,13 @@ menu ::
   Event t () ->
   Event t () ->
   Event t () ->
-  Event t (Vector (AtPath (Option ChangeCode) a)) ->
+  Dynamic t (Vector (AtPath (Option ChangeCode) a)) ->
   m (Dynamic t Bool, Event t (AtPath (Choice ChangeCode) a))
-menu eOpen eClose eNextItem eEnter eOptions = do
+menu eOpen eClose eNextItem eEnter dOptions = do
   eAction <-
     fmap switchDyn . widgetHold (pure never) $
     leftmost
-    [ menuForTarget eNextItem eEnter eOptions <$ eOpen
+    [ menuForTarget eNextItem eEnter dOptions <$ eOpen
     , pure never <$ eClose
     ]
   dOpen <- holdDyn False $ leftmost [True <$ eOpen, False <$ eClose]
@@ -285,8 +270,7 @@ app =
             eCloseMenu = gate (current dMenuOpen) (Input._iEscape inputs)
             eNextItem = gate (current dMenuOpen) (Input._iTab inputs)
             eSelectItem = gate (current dMenuOpen) (Input._iEnter inputs)
-            eOptions = Editor._eChangeCodeOptions editor
-          (dMenuOpen, eMenuChoice) <- menu eOpenMenu eCloseMenu eNextItem eSelectItem eOptions
+            dOptions = Editor._eChangeCodeOptions editor
 
           let
             eAction =
@@ -302,7 +286,6 @@ app =
               )
               (EditorControls
                { _ecAction = eAction
-               , _ecChangeCodeOptions = eOpenMenu
                }
               )
           dNodeInfo <-
@@ -313,6 +296,8 @@ app =
               )
               (Editor._eCode editor)
           let eNodeSelected = switchDyn $ View._nodeFocus <$> dNodeInfo
+
+          (dMenuOpen, eMenuChoice) <- menu eOpenMenu eCloseMenu eNextItem eSelectItem dOptions
         pure editor
     let
       dCode = Editor._eCode editor
