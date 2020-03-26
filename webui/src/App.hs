@@ -276,7 +276,7 @@ app =
       elAttr "div" ("class" =: Style.classes [Style.mainPanel]) $ do
         rec
           let
-            eOpenMenu = gate (not <$> current dMenuOpen) (Input._iSpace inputs)
+            eOpenMenu = Input._iSpace inputs
             eCloseMenu =
               leftmost
               [ gate (current dMenuOpen) (Input._iEscape inputs)
