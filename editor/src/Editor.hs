@@ -22,6 +22,7 @@ import Data.Bifunctor (first)
 import qualified Data.Dependent.Map as DMap
 import Data.Dependent.Sum ((==>))
 import Data.GADT.Compare (GEq(..), GCompare(..), (:~:)(..), GOrdering(..))
+import Data.Maybe as Maybe
 import Data.Vector (Vector)
 import Reflex
 
@@ -52,7 +53,7 @@ runChangeSelection c sel code =
   case c of
     SetSelection sel' -> Just sel'
     NextHole -> case sel of; Selection path -> Editor.Selection.nextHole path code
-    PrevHole -> case sel of; Selection path -> Editor.Selection.nextHole path code
+    PrevHole -> case sel of; Selection path -> Editor.Selection.prevHole path code
 
 data ChangeCode a b where
   InsertVar :: ChangeCode Name (Term ty tm)
@@ -72,7 +73,7 @@ runChangeCode ::
 runChangeCode (AtPath p c) arg a =
   case c of
     InsertVar ->
-      (,) (Selection p) <$>
+      (,) (Maybe.fromMaybe (Selection p) $ Editor.Selection.nextHole p a) <$>
       Editor.Code.insertVar p arg a
     InsertApp ->
       (,) (Selection $ Path.snoc p Path.AppL) <$>
@@ -81,7 +82,7 @@ runChangeCode (AtPath p c) arg a =
       (,) (Selection $ Path.snoc p Path.LamArg) <$>
       Path.set p (Syntax.Lam "x" $ lift Syntax.Hole) a
     InsertTVar ->
-      (,) (Selection p) <$>
+      (,) (Maybe.fromMaybe (Selection p) $ Editor.Selection.nextHole p a) <$>
       Editor.Code.insertTVar p arg a
     InsertTArr ->
       (,) (Selection $ Path.snoc p Path.TArrL) <$>

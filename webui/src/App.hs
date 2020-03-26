@@ -283,10 +283,16 @@ app =
             dOptions = Editor._eChangeCodeOptions editor
 
           let
+            eNextHole = gate (not <$> current dMenuOpen) (Input._iTab inputs)
+            ePrevHole = gate (not <$> current dMenuOpen) (Input._iShiftTab inputs)
+
+          let
             eAction =
               leftmost
               [ Editor.ChangeCode <$> eMenuChoice
               , Editor.ChangeSelection . Editor.SetSelection <$> eNodeSelected
+              , Editor.ChangeSelection Editor.NextHole <$ eNextHole
+              , Editor.ChangeSelection Editor.PrevHole <$ ePrevHole
               ]
           editor <-
             Editor.editor
