@@ -139,11 +139,13 @@ changeCodeOptions :: Selection a -> Vector (AtPath (Option ChangeCode) a)
 changeCodeOptions (Selection (path :: Path a x)) =
   case target @x of
     TargetTerm ->
-      [ AtPath path (Option InsertApp)
+      [ AtPath path (Option InsertVar)
+      , AtPath path (Option InsertApp)
       , AtPath path (Option InsertLam)
       ]
     TargetType ->
-      [ AtPath path (Option InsertTArr)
+      [ AtPath path (Option InsertTVar)
+      , AtPath path (Option InsertTArr)
       , AtPath path (Option InsertTForall)
       ]
     TargetName ->
